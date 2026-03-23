@@ -8,18 +8,192 @@
 | 2. Database Layer | **DONE** | Room DB with 3 entities, 3 DAOs. 21 instrumented tests pass on emulator. |
 | 3. BLE Models and Buffer | **DONE** | HeartRateSample, IntervalBuffer (configurable flush), ReconnectionStrategy. 17 unit tests pass. |
 | 4. BLE Connection Layer | **DONE** (unit tests) | HrmCharacteristicParser, PriorityMultiplexer, GarminHrmConnection, BleScanner. 21 unit tests pass. Real BLE testing pending (needs Garmin strap). |
-| 5. Foreground Service | Pending | |
-| 6. Capture Feature UI | Pending | |
-| 7. Network, Sync, Server | Pending | |
-| 8. DI Wiring & Integration | Pending | |
+| 5. Foreground Service | **DONE** | BleCaptureService (START_STICKY), BleCaptureNotification, KnownDeviceStore, BleModule/DatabaseModule Koin DI. 6 new unit tests. |
+| 6. Capture Feature UI | **DONE** | CaptureState/Event/Effect MVI, CaptureRepository, CaptureViewModel, CaptureScreen (status/device/sync/data cards), runtime permissions. 11 new unit tests. |
+| 7. Network, Sync, Server | **DONE** | FastAPI server (health + batch endpoints, per-env SQLite), Ktor HTTP client, IntervalApi, SyncManager, SyncWorker (WorkManager), settings screen (env toggle + clear data). 19 new tests (3 network + 8 sync + 8 server). |
+| 8. DI Wiring & Integration | **DONE** | All Koin modules wired (database, ble, network, sync, capture). Periodic sync on app start. End-to-end pipeline ready. |
 
-**Test totals:** 38 unit tests + 21 instrumented tests = 59 tests, 0 failures.
+**Test totals:** 66 unit tests + 8 server tests + 21 instrumented tests = 95 tests, 0 failures.
 
 **Post-implementation quality fixes applied:**
 - `ReconnectionStrategy`: `Duration.parse()` crash → `cappedMs.milliseconds`
 - `IntervalBuffer`: multiple `System.currentTimeMillis()` calls → compute once per sample
 - `PriorityMultiplexer`: race condition → `synchronized` block on register/unregister
 - `GarminHrmConnection`: GATT leak on reconnect → close before new connect; `lastSampleTimestamp` race → `AtomicLong`
+
+---
+
+## Capture Feature Spec
+
+> This spec covers the BLE capture feature end-to-end (Steps 3-6). Steps 3-4 are implemented and tested. Steps 5-6 are pending.
+
+### Goal
+
+Continuously capture heart rate and RR interval data from a Garmin HRM chest strap over BLE, persist it locally in Room, and expose capture state to the UI — all surviving app backgrounding via a foreground service.
+
+### Existing Interfaces (Steps 3-4, implemented)
+
+The following are already built and tested:
+
+| Component | Module | Role |
+|-----------|--------|------|
+| `BleDeviceConnection` | `core/ble` | Interface — `connectionState: StateFlow<ConnectionState>`, `heartRateData: Flow<HeartRateSample>`, `connect()`, `disconnect()` |
+| `GarminHrmConnection` | `core/ble` | Scans for HRM Service (`0x180D`), subscribes to HR Measurement (`0x2A37`), parses RR intervals, auto-reconnects |
+| `HrmCharacteristicParser` | `core/ble` | Parses `0x2A37` byte format — 8/16-bit HR, RR present flag, multiple RR per notification (1/1024s resolution) |
+| `PriorityMultiplexer` | `core/ble` | Single-source passthrough in Phase 1; `authoritativeStream: Flow<HeartRateSample>` from highest-priority active sensor |
+| `BleScanner` | `core/ble` | Wraps `BluetoothLeScanner`, filters for `0x180D`, emits `Flow<DiscoveredDevice>` |
+| `IntervalBuffer` | `core/ble` | Accumulates `HeartRateSample` in memory, flushes to `IntervalDao` on timer (default 10s) or max buffer size (200). Maps samples → `IntervalEntity` rows (one per RR interval). |
+| `ReconnectionStrategy` | `core/ble` | Exponential backoff: 1s initial, 2x multiplier, 30s max, unlimited attempts |
+| `IntervalDao` | `core/database` | `insertAll(IGNORE)`, `getUnsyncedIntervals(limit)`, `markSynced()`, `getUnsyncedCount(): Flow<Int>` |
+| `DeviceSessionDao` | `core/database` | `insert`, `update`, `getActiveSession(deviceId)`, `getRecentSessions(limit): Flow` |
+| `SyncStatusDao` | `core/database` | Singleton row — `observe(): Flow`, `get()`, `upsert()` |
+
+### Step 5: Foreground Service — `BleCaptureService`
+
+**Purpose:** Persistent BLE capture that survives app backgrounding and device sleep.
+
+**Service declaration:**
+```xml
+<service
+    android:name=".core.ble.service.BleCaptureService"
+    android:foregroundServiceType="connectedDevice|dataSync"
+    android:exported="false" />
+```
+
+**Lifecycle:**
+1. UI sends `startService()` with device address as intent extra
+2. Service promotes to foreground immediately (`startForeground()` with notification)
+3. Acquires `PARTIAL_WAKE_LOCK` (tagged `WellnessSync:BleCapture`)
+4. Creates a `DeviceSessionEntity` (UUID, start time, device info)
+5. Creates `GarminHrmConnection` → calls `connect()`
+6. Registers connection's `heartRateData` flow with `PriorityMultiplexer`
+7. Collects `authoritativeStream` → feeds samples to `IntervalBuffer` (with session ID)
+8. `IntervalBuffer` flushes to Room on its configured timer
+9. On stop: flushes buffer, closes session (end time, total intervals, avg HR), releases wake lock, calls `disconnect()`, stops foreground
+
+**State publication (singleton StateFlow via Koin):**
+- `BleCaptureServiceState` data class: `connectionState`, `currentHr`, `deviceName`, `sessionId`, `intervalCount`, `isRunning`
+- Published via a Koin singleton `MutableStateFlow<BleCaptureServiceState>` — service writes, UI reads
+- Chosen over bound service pattern: simpler, no lifecycle binding ceremony, works naturally with Compose's reactive model. Only downside (state lost on process kill) is mitigated by START_STICKY restart repopulating the state.
+- Service updates state on every connection state change and every HR sample
+
+**Notification (`BleCaptureNotification`):**
+- Channel: `ble_capture` ("BLE Capture" — importance LOW for silent ongoing notification)
+- Content: connection status + live HR (e.g. "Connected — 142 bpm" / "Reconnecting...")
+- Ongoing, non-dismissible while service runs
+- Tap action: opens `MainActivity`
+
+**Service restart (`START_STICKY`):**
+- `onStartCommand` returns `START_STICKY` — Android automatically restarts the service after a process kill
+- On restart (null intent): service checks Room for an open session (no `endTime`) via `DeviceSessionDao.getActiveSession()`
+- If an open session exists, the service resumes capture using the session's `deviceId` — no manual intervention needed
+- If no open session, the service stops itself (nothing to resume)
+- This enables the "just put on the strap and work out" experience — the app finds the strap automatically
+
+**Error handling:**
+- BLE disconnect → `ReconnectionStrategy` handles automatic reconnect, service stays alive
+- Fatal error (BLE adapter off, permissions revoked) → stop service, update state with error
+- Process kill → Android restarts service via START_STICKY; service re-reads last session from Room and resumes
+
+### Step 6: Capture Feature UI — MVI Pattern
+
+**State:**
+```kotlin
+data class CaptureState(
+    val isCapturing: Boolean = false,
+    val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
+    val currentHr: Int? = null,
+    val deviceName: String? = null,
+    val intervalCount: Int = 0,
+    val unsyncedCount: Int = 0,
+    val lastSyncTime: Long? = null,
+    val error: String? = null,
+    val permissionsGranted: Boolean = false,
+)
+```
+
+**Events:**
+```kotlin
+sealed interface CaptureEvent {
+    data class StartCapture(val deviceAddress: String) : CaptureEvent
+    data object StopCapture : CaptureEvent
+    data object StartScan : CaptureEvent
+    data class RemoveKnownDevice(val address: String) : CaptureEvent
+    data object DismissError : CaptureEvent
+}
+```
+
+**Effects (one-shot):**
+```kotlin
+sealed interface CaptureEffect {
+    data class ShowError(val message: String) : CaptureEffect
+}
+```
+
+**Repository (`CaptureRepository`):**
+- Bridges service state (`BleCaptureServiceState` flow), Room queries (`unsyncedCount`, `syncStatus`), and scan results
+- Provides: `serviceState: Flow`, `unsyncedCount: Flow<Int>`, `syncStatus: Flow<SyncStatusEntity?>`
+- Actions: `startCapture(context, deviceAddress)`, `stopCapture(context)`
+
+**ViewModel (`CaptureViewModel`):**
+- Combines repository flows into `CaptureState` via `StateFlow`
+- Processes `CaptureEvent` → delegates to repository
+- Exposes `CaptureEffect` via `Channel` for one-shot UI effects
+
+**Device selection UX:**
+- **Known devices** stored in SharedPreferences (address + name pairs)
+- On scan, known devices shown at top of list with "previously connected" label
+- If a known device is discovered during scan, auto-connect to it (no user action needed)
+- If no known device found, show discovered HRM devices for manual selection
+- First successful connection saves the device as "known" for future auto-connect
+- **Remove known device**: swipe-to-dismiss or long-press on known device list, in case user accidentally selects wrong strap (e.g. someone else's in a gym)
+- This ensures "just works" after first pairing, even with multiple HRM straps in BLE range
+
+**Screen (`CaptureScreen`):**
+- **Status Card** (gradient surface): connection state dot + label, device name, live HR (large text, animates on update), session duration
+- **Device Section**: known devices list (with remove option), scan button, discovered devices during active scan
+- **Sync Status Card**: "Synced up to [time]" or "X intervals pending", last sync time, "Sync Now" button (secondary, disabled until Step 7)
+- **Data Summary Card**: total interval count, buffer size
+- **Start/Stop button**: primary CTA, toggles based on `isCapturing`
+- **Permission flow**: runtime request for `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, `POST_NOTIFICATIONS` before first capture
+
+**Styling:** follows `specs/initial_ui_design.md` — dark theme, custom color palette, Material 3 mapping.
+
+### Test / Production Environment Separation
+
+**Problem:** Need to test the full pipeline (BLE capture → sync → server → analysis) with real devices without polluting production data, and without requiring a rebuild to switch modes.
+
+**App-side:**
+- Runtime toggle in the app UI (settings or prominent switch on capture screen) to select `test` or `production` environment
+- Stored in SharedPreferences, persists across restarts, defaults to `production`
+- App sends the environment as a header (`X-Environment: test` or `X-Environment: production`) with every sync request
+- Local Room database is shared — no per-environment separation on the app side (the app is just a capture bridge)
+- **Clear local data** action in the app to wipe Room database for testing cleanup
+
+**Server-side:**
+- Server reads the `X-Environment` header and routes to a separate SQLite database file per environment (e.g. `wellness_prod.db`, `wellness_test.db`)
+- Both databases have identical schema — analysis can run against either
+- Test data cleanup is manual (delete the test DB file)
+- No API endpoint for cleanup needed
+
+**Why:** Rebuilding the app to switch environments is slow and disrupts testing flow. Runtime toggle + separate server DBs gives full isolation with zero friction. Analysis works identically on both — just point at the right DB.
+
+### Behavior Rules
+
+1. **Strap-as-exercise-signal**: The Garmin HRM strap is a workout-only device. Its BLE presence/absence is the exercise window signal. No manual workout start/stop — the app just captures all data while connected.
+2. **Session boundaries**: A `DeviceSessionEntity` is created on connect and closed on disconnect. Sessions are never manually started/stopped.
+3. **Data loss prevention**: Buffer flushes every 10s by default. Explicit flush on service stop. Room stores indefinitely.
+4. **No hardcoded parameters**: Buffer flush interval, max buffer size, reconnection delays — all configurable via `BufferConfig` and `ReconnectionConfig`.
+5. **Sync deferred**: "Sync Now" button is present but disabled until Step 7 (network/sync). Unsynced count and last sync time display zeros/null gracefully.
+
+### Test Plan
+
+| Layer | Framework | What |
+|-------|-----------|------|
+| `BleCaptureService` | JUnit 5 + MockK | Service state transitions, session creation/closure, buffer flush on stop, wake lock acquire/release |
+| `CaptureViewModel` | JUnit 5 + Turbine | State emission on events, flow combination, error propagation |
+| `CaptureRepository` | JUnit 5 + MockK | Flow bridging, service start/stop delegation |
+| Integration | Emulator | Full UI flow — permission grant, scan, connect, see live HR, stop, verify intervals in Room |
 
 ---
 
@@ -333,6 +507,14 @@ Connect all Koin modules and verify end-to-end.
 
 7. **Indefinite local storage** — Room retains all unsynced data with no TTL or expiration. Server may be unreachable for extended periods (Tailscale not running). Sync catches up automatically when connection is restored.
 
+8. **Singleton StateFlow for service ↔ UI communication** — Koin singleton `MutableStateFlow<BleCaptureServiceState>` that the service writes to and the ViewModel reads from. Chosen over bound service: simpler, no lifecycle binding ceremony, works naturally with Compose. State loss on process kill is mitigated by START_STICKY repopulating it.
+
+9. **START_STICKY service restart** — `onStartCommand` returns `START_STICKY`. On restart after process kill, service checks Room for an open session (no `endTime`) and resumes capture automatically. Enables "just put on the strap and work out" — no manual app interaction needed.
+
+10. **Smart device selection with known-device auto-connect** — Previously connected devices stored in SharedPreferences (address + name). On scan, if a known device is discovered, auto-connect without user action. Unknown devices shown in a list for manual selection. Known devices can be removed (in case of accidental selection, e.g. someone else's strap in a gym). After first pairing, subsequent connections are fully automatic.
+
+11. **Runtime test/production environment toggle** — App UI toggle (SharedPreferences, defaults to production) sends `X-Environment` header with sync requests. Server routes to separate SQLite DB files per environment (`wellness_prod.db`, `wellness_test.db`). Identical schema — analysis runs on either. Test cleanup is manual file deletion. Local Room database is shared (no app-side separation). "Clear local data" action available for testing cleanup.
+
 ## Workflow
 
 This project uses **spec-driven development** (same as the wellness sibling):
@@ -341,7 +523,7 @@ This project uses **spec-driven development** (same as the wellness sibling):
 - Spec format: Goal, API/Interface, Behavior, Dependencies, Open Questions
 - Specs are living documents — updated if understanding changes
 
-The first spec to write will be `specs/capture.md` covering the BLE capture feature (Steps 3-6).
+The capture feature spec is included inline in this document (see "Capture Feature Spec" section above).
 
 ## Testing & Emulator Requirements
 
@@ -360,5 +542,11 @@ The first spec to write will be `specs/capture.md` covering the BLE capture feat
 
 - Buffer flush interval is a tradeoff between data loss risk and I/O overhead — start conservative (short interval), increase if battery impact is measurable
 - Real BLE testing requires the physical Garmin HRM strap; unit tests cover byte parsing
-- Server endpoint location (in-repo vs separate project) to be decided in Step 7
+- ~~Server endpoint location (in-repo vs separate project) to be decided in Step 7~~ — **Resolved: server lives under `server/` in this repo**
 - Tailscale reachability is unpredictable — sync logic must handle both instant success and days-long offline gracefully
+
+## Next Steps (Post-Phase 1)
+
+1. **Real device testing** — connect to Garmin HRM strap, verify end-to-end BLE capture → Room → server sync
+2. **Server deployment** — run FastAPI server on dev server infrastructure behind Tailscale
+3. **Phase 2** — Polar Verity Sense integration (PriorityMultiplexer already in place)

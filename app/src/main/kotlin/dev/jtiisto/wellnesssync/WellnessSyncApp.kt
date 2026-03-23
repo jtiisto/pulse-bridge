@@ -7,16 +7,19 @@ import androidx.compose.ui.Modifier
 import androidx.navigation.compose.rememberNavController
 import dev.jtiisto.wellnesssync.core.ui.theme.WellnessSyncTheme
 import dev.jtiisto.wellnesssync.navigation.WellnessSyncNavHost
+import org.koin.compose.KoinContext
 
 @Composable
 fun WellnessSyncApp() {
-    WellnessSyncTheme {
-        val navController = rememberNavController()
-        Scaffold { innerPadding ->
-            WellnessSyncNavHost(
-                navController = navController,
-                modifier = Modifier.padding(innerPadding),
-            )
+    KoinContext {
+        WellnessSyncTheme {
+            val navController = rememberNavController()
+            Scaffold { innerPadding ->
+                WellnessSyncNavHost(
+                    navController = navController,
+                    modifier = Modifier.padding(innerPadding),
+                )
+            }
         }
     }
 }

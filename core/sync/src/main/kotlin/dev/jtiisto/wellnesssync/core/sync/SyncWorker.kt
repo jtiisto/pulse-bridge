@@ -1,0 +1,68 @@
+package dev.jtiisto.wellnesssync.core.sync
+
+import android.content.Context
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
+import java.util.concurrent.TimeUnit
+
+class SyncWorker(
+    context: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(context, params), KoinComponent {
+
+    private val syncManager: SyncManager by inject()
+
+    override suspend fun doWork(): Result {
+        return try {
+            syncManager.sync()
+            Result.success()
+        } catch (e: Exception) {
+            syncManager.updateSyncStatusOnError(e.message ?: "Sync failed")
+            if (runAttemptCount < MAX_RETRIES) Result.retry() else Result.failure()
+        }
+    }
+
+    companion object {
+        const val WORK_NAME = "wellness_sync_periodic"
+        private const val MAX_RETRIES = 5
+
+        private val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        fun enqueuePeriodicSync(context: Context) {
+            val request = PeriodicWorkRequestBuilder<SyncWorker>(
+                15, TimeUnit.MINUTES,
+            )
+                .setConstraints(constraints)
+                .setBackoffCriteria(
+                    BackoffPolicy.EXPONENTIAL,
+                    30, TimeUnit.SECONDS,
+                )
+                .build()
+
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                WORK_NAME,
+                ExistingPeriodicWorkPolicy.KEEP,
+                request,
+            )
+        }
+
+        fun enqueueSyncNow(context: Context) {
+            val request = OneTimeWorkRequestBuilder<SyncWorker>()
+                .setConstraints(constraints)
+                .build()
+
+            WorkManager.getInstance(context).enqueue(request)
+        }
+    }
+}

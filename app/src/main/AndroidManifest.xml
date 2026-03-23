@@ -32,5 +32,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name="dev.jtiisto.wellnesssync.core.ble.service.BleCaptureService"
+            android:foregroundServiceType="connectedDevice|dataSync"
+            android:exported="false" />
     </application>
 </manifest>
