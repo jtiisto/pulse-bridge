@@ -4,6 +4,8 @@
 > (MVI state, ViewModels, Repositories) is decoupled from the UI layer so Compose
 > screens can be replaced without touching business logic. Keep UI components thin
 > and state-driven.
+>
+> **Status (2026-03-23):** Implemented in Phase 1. Two screens: CaptureScreen (main) and SettingsScreen. Color palette, typography, spacing, card patterns, and status indicators are all applied. See `feature/capture/ui/CaptureScreen.kt` and `app/.../settings/SettingsScreen.kt`.
 
 ## Design Source
 
