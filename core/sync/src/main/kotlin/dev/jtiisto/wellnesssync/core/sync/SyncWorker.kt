@@ -10,6 +10,8 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import dev.jtiisto.wellnesssync.core.network.ServerHealthMonitor
+import io.ktor.client.plugins.ClientRequestException
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 import java.util.concurrent.TimeUnit
@@ -20,13 +22,22 @@ class SyncWorker(
 ) : CoroutineWorker(context, params), KoinComponent {
 
     private val syncManager: SyncManager by inject()
+    private val serverHealthMonitor: ServerHealthMonitor by inject()
 
     override suspend fun doWork(): Result {
         return try {
             syncManager.sync()
+            serverHealthMonitor.reportSuccess()
             Result.success()
+        } catch (e: ClientRequestException) {
+            // 4xx: the server is reachable but rejected the request — retrying
+            // the same payload can't succeed, so don't spin on a poison batch
+            syncManager.updateSyncStatusOnError("Server rejected sync: HTTP ${e.response.status.value}")
+            serverHealthMonitor.reportSuccess()
+            Result.failure()
         } catch (e: Exception) {
             syncManager.updateSyncStatusOnError(e.message ?: "Sync failed")
+            serverHealthMonitor.reportFailure()
             if (runAttemptCount < MAX_RETRIES) Result.retry() else Result.failure()
         }
     }

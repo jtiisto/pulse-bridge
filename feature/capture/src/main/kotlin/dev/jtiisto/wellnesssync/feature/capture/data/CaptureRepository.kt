@@ -3,6 +3,11 @@ package dev.jtiisto.wellnesssync.feature.capture.data
 import android.content.Context
 import dev.jtiisto.wellnesssync.core.ble.device.KnownDevice
 import dev.jtiisto.wellnesssync.core.ble.device.KnownDeviceStore
+import dev.jtiisto.wellnesssync.core.ble.polar.PolarDevice
+import dev.jtiisto.wellnesssync.core.ble.polar.PolarDeviceDetector
+import dev.jtiisto.wellnesssync.core.ble.polar.PolarDeviceStore
+import dev.jtiisto.wellnesssync.core.ble.polar.PolarSyncService
+import dev.jtiisto.wellnesssync.core.ble.polar.PolarSyncServiceState
 import dev.jtiisto.wellnesssync.core.ble.scanner.BleScanner
 import dev.jtiisto.wellnesssync.core.ble.scanner.DiscoveredDevice
 import dev.jtiisto.wellnesssync.core.ble.service.BleCaptureService
@@ -16,12 +21,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 
 class CaptureRepository(
     private val serviceState: MutableStateFlow<BleCaptureServiceState>,
+    private val polarSyncState: MutableStateFlow<PolarSyncServiceState>,
     private val intervalDao: IntervalDao,
     private val syncStatusDao: SyncStatusDao,
     private val bleScanner: BleScanner,
     private val knownDeviceStore: KnownDeviceStore,
+    private val polarDeviceStore: PolarDeviceStore,
+    private val polarDeviceDetector: PolarDeviceDetector,
 ) {
     val serviceStateFlow: Flow<BleCaptureServiceState> = serviceState
+
+    val polarSyncStateFlow: Flow<PolarSyncServiceState> = polarSyncState
 
     val unsyncedCount: Flow<Int> = intervalDao.getUnsyncedCount()
 
@@ -51,5 +61,23 @@ class CaptureRepository(
 
     fun startPeriodicSync(context: Context) {
         SyncWorker.enqueuePeriodicSync(context)
+    }
+
+    // Polar device management
+    fun getPolarDevices(): List<PolarDevice> = polarDeviceStore.getAll()
+
+    fun addPolarDevice(deviceId: String, name: String) {
+        polarDeviceStore.save(deviceId, name)
+        polarDeviceDetector.registerScanFilter(deviceId)
+    }
+
+    fun removePolarDevice(deviceId: String) {
+        polarDeviceDetector.unregisterScanFilter(deviceId)
+        polarDeviceStore.remove(deviceId)
+    }
+
+    fun syncPolarNow(context: Context, deviceId: String) {
+        val intent = PolarSyncService.startIntent(context, deviceId)
+        context.startForegroundService(intent)
     }
 }

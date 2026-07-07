@@ -24,7 +24,23 @@ class SyncResponse(BaseModel):
     total_received: int
 
 
+class AccelerometerSummaryRecord(BaseModel):
+    device_id: str
+    window_start: int
+    magnitude_mean: float
+    magnitude_std: float
+    magnitude_max: float
+    sample_count: int
+    sensor_type: str
+    session_id: str | None = None
+
+
+class AccelerometerBatch(BaseModel):
+    summaries: list[AccelerometerSummaryRecord]
+
+
 class HealthResponse(BaseModel):
     status: str
     environment: str
     intervals_count: int
+    accelerometer_summaries_count: int = 0

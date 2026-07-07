@@ -226,7 +226,7 @@ private fun ClearDataCard(onClear: () -> Unit) {
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "Clear all locally stored intervals, sessions, and sync status",
+                text = "Delete locally stored data that has already been synced to the server. Unsynced data is kept.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -245,7 +245,7 @@ private fun ClearDataCard(onClear: () -> Unit) {
                     contentDescription = null,
                     modifier = Modifier.padding(end = 8.dp),
                 )
-                Text("Clear Local Data")
+                Text("Clear Synced Data")
             }
         }
     }
@@ -258,9 +258,9 @@ private fun ClearDataConfirmDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Clear all local data?") },
+        title = { Text("Clear synced data?") },
         text = {
-            Text("This will delete all stored intervals, sessions, and sync status. Unsynced data will be lost. This cannot be undone.")
+            Text("This will delete locally stored intervals and accelerometer summaries that were already synced to the server. Unsynced data is kept. This cannot be undone.")
         },
         confirmButton = {
             TextButton(onClick = onConfirm) {

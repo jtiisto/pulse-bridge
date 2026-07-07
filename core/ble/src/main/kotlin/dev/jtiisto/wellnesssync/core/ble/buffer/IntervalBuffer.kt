@@ -18,6 +18,7 @@ class IntervalBuffer(
     private val buffer = mutableListOf<IntervalEntity>()
     private val mutex = Mutex()
     private var flushJob: Job? = null
+    private val lastTimestampByDevice = mutableMapOf<String, Long>()
 
     val size: Int get() = buffer.size
 
@@ -37,9 +38,8 @@ class IntervalBuffer(
     }
 
     suspend fun add(sample: HeartRateSample, sessionId: String?) {
-        val entities = mapToEntities(sample, sessionId)
         mutex.withLock {
-            buffer.addAll(entities)
+            buffer.addAll(mapToEntities(sample, sessionId))
             if (buffer.size >= config.maxBufferSize) {
                 flushLocked()
             }
@@ -69,7 +69,7 @@ class IntervalBuffer(
             return listOf(
                 IntervalEntity(
                     deviceId = sample.deviceId,
-                    timestampDevice = sample.timestampDevice,
+                    timestampDevice = nextTimestamp(sample.deviceId, sample.timestampDevice),
                     timestampPhone = phoneTimestamp,
                     heartRateBpm = sample.heartRateBpm,
                     rrIntervalMs = 0,
@@ -87,7 +87,7 @@ class IntervalBuffer(
             val cumulativeOffsetMs = sample.rrIntervalsMs.take(index).sum().toLong()
             IntervalEntity(
                 deviceId = sample.deviceId,
-                timestampDevice = sample.timestampDevice + cumulativeOffsetMs,
+                timestampDevice = nextTimestamp(sample.deviceId, sample.timestampDevice + cumulativeOffsetMs),
                 timestampPhone = phoneTimestamp,
                 heartRateBpm = sample.heartRateBpm,
                 rrIntervalMs = rrMs,
@@ -97,5 +97,16 @@ class IntervalBuffer(
                 sessionId = sessionId,
             )
         }
+    }
+
+    // (deviceId, timestampDevice) is the PK, and both Room and the server insert
+    // with OR IGNORE — a colliding timestamp silently drops a real interval.
+    // Receipt-clock bases and zero-length RRs can both produce collisions, so
+    // keep timestamps strictly increasing per device. Must be called under mutex.
+    private fun nextTimestamp(deviceId: String, candidate: Long): Long {
+        val last = lastTimestampByDevice[deviceId]
+        val timestamp = if (last != null && candidate <= last) last + 1 else candidate
+        lastTimestampByDevice[deviceId] = timestamp
+        return timestamp
     }
 }

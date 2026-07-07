@@ -1,17 +1,28 @@
 import time
 
-from fastapi import FastAPI, Header
+from fastapi import FastAPI, Header, HTTPException
 
-from database import get_db, insert_intervals
-from models import HealthResponse, IntervalBatch, SyncResponse
+from database import get_db, insert_accelerometer_summaries, insert_intervals
+from models import AccelerometerBatch, HealthResponse, IntervalBatch, SyncResponse
 
 app = FastAPI(title="Wellness Sync Server", version="0.1.0")
 
+VALID_ENVIRONMENTS = ("production", "test")
+
 
 def resolve_environment(x_environment: str | None) -> str:
-    if x_environment and x_environment in ("production", "test"):
-        return x_environment
-    return "production"
+    # Missing header defaults to production for backward compatibility.
+    if x_environment is None:
+        return "production"
+    if x_environment not in VALID_ENVIRONMENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid X-Environment header: {x_environment!r}. "
+                f"Must be one of {list(VALID_ENVIRONMENTS)}."
+            ),
+        )
+    return x_environment
 
 
 @app.get("/api/v1/health")
@@ -19,12 +30,17 @@ def health(x_environment: str | None = Header(None)) -> HealthResponse:
     env = resolve_environment(x_environment)
     conn = get_db(env)
     try:
-        cursor = conn.execute("SELECT COUNT(*) FROM intervals")
-        count = cursor.fetchone()[0]
+        intervals_count = conn.execute(
+            "SELECT COUNT(*) FROM intervals"
+        ).fetchone()[0]
+        accel_count = conn.execute(
+            "SELECT COUNT(*) FROM accelerometer_summaries"
+        ).fetchone()[0]
         return HealthResponse(
             status="ok",
             environment=env,
-            intervals_count=count,
+            intervals_count=intervals_count,
+            accelerometer_summaries_count=accel_count,
         )
     finally:
         conn.close()
@@ -54,6 +70,30 @@ def batch_sync(
             (synced_at, len(records), inserted, duplicates, f"env={env}"),
         )
         conn.commit()
+
+        return SyncResponse(
+            accepted=inserted,
+            duplicates=duplicates,
+            total_received=len(records),
+        )
+    finally:
+        conn.close()
+
+
+@app.post("/api/v1/accelerometer/batch")
+def accelerometer_batch_sync(
+    batch: AccelerometerBatch,
+    x_environment: str | None = Header(None),
+) -> SyncResponse:
+    env = resolve_environment(x_environment)
+    conn = get_db(env)
+    try:
+        synced_at = int(time.time() * 1000)
+        records = [
+            {**summary.model_dump(), "synced_at": synced_at}
+            for summary in batch.summaries
+        ]
+        inserted, duplicates = insert_accelerometer_summaries(conn, records)
 
         return SyncResponse(
             accepted=inserted,

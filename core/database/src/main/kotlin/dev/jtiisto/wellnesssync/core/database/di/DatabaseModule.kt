@@ -11,10 +11,13 @@ val databaseModule = module {
             get(),
             WellnessSyncDatabase::class.java,
             "wellness_sync.db",
-        ).build()
+        )
+            .addMigrations(WellnessSyncDatabase.MIGRATION_1_2)
+            .build()
     }
     single { get<WellnessSyncDatabase>().intervalDao() }
     single { get<WellnessSyncDatabase>().deviceSessionDao() }
     single { get<WellnessSyncDatabase>().syncStatusDao() }
-    single { DatabaseCleaner(get()) }
+    single { get<WellnessSyncDatabase>().accelerometerSummaryDao() }
+    single { DatabaseCleaner(get(), get()) }
 }

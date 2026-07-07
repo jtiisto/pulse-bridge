@@ -64,7 +64,7 @@ class SettingsViewModel(
 
     private fun clearLocalData() {
         viewModelScope.launch {
-            databaseCleaner.clearAll()
+            databaseCleaner.clearSyncedData()
             _state.update { it.copy(clearDataSuccess = true) }
         }
     }

@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.jtiisto.wellnesssync.core.ble.scanner.DiscoveredDevice
+import dev.jtiisto.wellnesssync.core.network.ServerHealthMonitor
 import dev.jtiisto.wellnesssync.feature.capture.data.CaptureRepository
 import dev.jtiisto.wellnesssync.feature.capture.domain.model.CaptureEffect
 import dev.jtiisto.wellnesssync.feature.capture.domain.model.CaptureEvent
@@ -20,6 +21,7 @@ import kotlinx.coroutines.launch
 class CaptureViewModel(
     application: Application,
     private val repository: CaptureRepository,
+    private val serverHealthMonitor: ServerHealthMonitor,
 ) : AndroidViewModel(application) {
 
     private val _state = MutableStateFlow(CaptureState())
@@ -29,13 +31,19 @@ class CaptureViewModel(
     val effects = _effects.receiveAsFlow()
 
     private var scanJob: Job? = null
+    private var polarScanJob: Job? = null
     private val discoveredSet = mutableSetOf<String>()
+    private val discoveredPolarSet = mutableSetOf<String>()
 
     init {
         observeServiceState()
         observeUnsyncedCount()
         observeSyncStatus()
+        observeServerStatus()
+        observePolarSyncState()
         loadKnownDevices()
+        loadPolarDevices()
+        serverHealthMonitor.start()
     }
 
     fun onEvent(event: CaptureEvent) {
@@ -51,11 +59,19 @@ class CaptureViewModel(
                 _state.update { it.copy(permissionsGranted = true) }
                 repository.startPeriodicSync(getApplication())
             }
+            // Polar events
+            is CaptureEvent.AddPolarDevice -> addPolarDevice(event.deviceId, event.name)
+            is CaptureEvent.RemovePolarDevice -> removePolarDevice(event.deviceId)
+            is CaptureEvent.SyncPolarNow -> syncPolarNow(event.deviceId)
+            is CaptureEvent.StartPolarScan -> startPolarScan()
+            is CaptureEvent.StopPolarScan -> stopPolarScan()
         }
     }
 
     private fun startCapture(address: String, name: String?) {
+        // Stop ALL active scans — scanning during connectGatt causes flaky connections
         stopScan()
+        stopPolarScan()
         repository.startCapture(getApplication(), address, name)
     }
 
@@ -117,6 +133,64 @@ class CaptureViewModel(
         _state.update { it.copy(knownDevices = repository.getKnownDevices()) }
     }
 
+    // Polar methods
+    private fun addPolarDevice(deviceId: String, name: String) {
+        repository.addPolarDevice(deviceId, name)
+        loadPolarDevices()
+        stopPolarScan()
+    }
+
+    private fun removePolarDevice(deviceId: String) {
+        repository.removePolarDevice(deviceId)
+        loadPolarDevices()
+    }
+
+    private fun syncPolarNow(deviceId: String) {
+        repository.syncPolarNow(getApplication(), deviceId)
+    }
+
+    private fun loadPolarDevices() {
+        _state.update { it.copy(polarDevices = repository.getPolarDevices()) }
+    }
+
+    private fun startPolarScan() {
+        if (polarScanJob?.isActive == true) return
+
+        discoveredPolarSet.clear()
+        _state.update { it.copy(isPolarScanning = true, discoveredPolarDevices = emptyList()) }
+
+        polarScanJob = viewModelScope.launch {
+            try {
+                repository.scanForDevices().collect { device ->
+                    handleDiscoveredPolarDevice(device)
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(isPolarScanning = false) }
+                _effects.send(CaptureEffect.ShowError("Polar scan failed: ${e.message}"))
+            }
+        }
+    }
+
+    private fun handleDiscoveredPolarDevice(device: DiscoveredDevice) {
+        if (!discoveredPolarSet.add(device.address)) return
+
+        // Only show devices with Polar-like names
+        val name = device.name ?: return
+        if (!name.contains("Polar", ignoreCase = true)) return
+
+        _state.update { current ->
+            current.copy(
+                discoveredPolarDevices = current.discoveredPolarDevices + device,
+            )
+        }
+    }
+
+    private fun stopPolarScan() {
+        polarScanJob?.cancel()
+        polarScanJob = null
+        _state.update { it.copy(isPolarScanning = false) }
+    }
+
     private fun observeServiceState() {
         viewModelScope.launch {
             repository.serviceStateFlow.collect { serviceState ->
@@ -138,6 +212,18 @@ class CaptureViewModel(
         }
     }
 
+    private fun observePolarSyncState() {
+        viewModelScope.launch {
+            repository.polarSyncStateFlow.collect { polarState ->
+                _state.update { it.copy(polarSyncState = polarState) }
+                // Refresh devices after sync completes (last sync time updated)
+                if (!polarState.isRunning && polarState.status != dev.jtiisto.wellnesssync.core.ble.polar.PolarSyncServiceState.Status.IDLE) {
+                    loadPolarDevices()
+                }
+            }
+        }
+    }
+
     private fun observeUnsyncedCount() {
         viewModelScope.launch {
             repository.unsyncedCount.collect { count ->
@@ -152,5 +238,18 @@ class CaptureViewModel(
                 _state.update { it.copy(lastSyncTime = status?.lastSyncTime) }
             }
         }
+    }
+
+    private fun observeServerStatus() {
+        viewModelScope.launch {
+            serverHealthMonitor.status.collect { status ->
+                _state.update { it.copy(serverStatus = status) }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        serverHealthMonitor.stop()
     }
 }

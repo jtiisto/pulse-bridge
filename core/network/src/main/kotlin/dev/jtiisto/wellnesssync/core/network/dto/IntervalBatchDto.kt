@@ -34,4 +34,5 @@ data class HealthResponseDto(
     val status: String,
     val environment: String,
     @SerialName("intervals_count") val intervalsCount: Int,
+    @SerialName("accelerometer_summaries_count") val accelerometerSummariesCount: Int = 0,
 )

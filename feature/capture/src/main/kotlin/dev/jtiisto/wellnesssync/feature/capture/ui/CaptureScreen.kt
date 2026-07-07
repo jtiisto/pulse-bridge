@@ -56,7 +56,10 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.jtiisto.wellnesssync.core.ble.device.KnownDevice
 import dev.jtiisto.wellnesssync.core.ble.model.ConnectionState
+import dev.jtiisto.wellnesssync.core.ble.polar.PolarDevice
+import dev.jtiisto.wellnesssync.core.ble.polar.PolarSyncServiceState
 import dev.jtiisto.wellnesssync.core.ble.scanner.DiscoveredDevice
+import dev.jtiisto.wellnesssync.core.network.ServerStatus
 import dev.jtiisto.wellnesssync.core.ui.theme.CardBackground
 import dev.jtiisto.wellnesssync.core.ui.theme.Success
 import dev.jtiisto.wellnesssync.core.ui.theme.Warning
@@ -121,10 +124,10 @@ private fun CaptureScreenContent(
             TopAppBar(
                 title = { Text("Wellness Sync") },
                 actions = {
-                    ConnectionDot(state.connectionState)
+                    ServerStatusDot(state.serverStatus)
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        text = state.connectionState.label(),
+                        text = state.serverStatus.label(),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
@@ -175,6 +178,23 @@ private fun CaptureScreenContent(
                         onRemoveKnown = { onEvent(CaptureEvent.RemoveKnownDevice(it)) },
                     )
                 }
+            }
+
+            // Polar devices section
+            item {
+                PolarDevicesSection(
+                    polarDevices = state.polarDevices,
+                    discoveredPolarDevices = state.discoveredPolarDevices,
+                    isPolarScanning = state.isPolarScanning,
+                    polarSyncState = state.polarSyncState,
+                    onStartScan = { onEvent(CaptureEvent.StartPolarScan) },
+                    onStopScan = { onEvent(CaptureEvent.StopPolarScan) },
+                    onAddDevice = { address, name ->
+                        onEvent(CaptureEvent.AddPolarDevice(address, name))
+                    },
+                    onRemoveDevice = { onEvent(CaptureEvent.RemovePolarDevice(it)) },
+                    onSyncNow = { onEvent(CaptureEvent.SyncPolarNow(it)) },
+                )
             }
 
             // Sync status card
@@ -540,6 +560,150 @@ private fun DataSummaryCard(intervalCount: Int) {
 }
 
 @Composable
+private fun PolarDevicesSection(
+    polarDevices: List<PolarDevice>,
+    discoveredPolarDevices: List<DiscoveredDevice>,
+    isPolarScanning: Boolean,
+    polarSyncState: PolarSyncServiceState,
+    onStartScan: () -> Unit,
+    onStopScan: () -> Unit,
+    onAddDevice: (deviceId: String, name: String) -> Unit,
+    onRemoveDevice: (deviceId: String) -> Unit,
+    onSyncNow: (deviceId: String) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = CardBackground),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Polar Devices",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+
+            Spacer(Modifier.height(12.dp))
+
+            // Known Polar devices
+            if (polarDevices.isNotEmpty()) {
+                polarDevices.forEach { device ->
+                    PolarDeviceRow(
+                        device = device,
+                        isSyncing = polarSyncState.isRunning && polarSyncState.deviceId == device.deviceId,
+                        onSyncNow = { onSyncNow(device.deviceId) },
+                        onRemove = { onRemoveDevice(device.deviceId) },
+                    )
+                    Spacer(Modifier.height(4.dp))
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+
+            // Sync status when running
+            if (polarSyncState.isRunning) {
+                Text(
+                    text = when (polarSyncState.status) {
+                        PolarSyncServiceState.Status.CONNECTING -> "Connecting..."
+                        PolarSyncServiceState.Status.FETCHING ->
+                            "Fetching ${polarSyncState.recordingsProcessed}/${polarSyncState.recordingsFound} recordings"
+                        PolarSyncServiceState.Status.COMPLETE -> "Sync complete"
+                        else -> "Syncing..."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+
+            // Discovered Polar devices
+            if (discoveredPolarDevices.isNotEmpty()) {
+                Text(
+                    text = "Nearby Polar Devices",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                discoveredPolarDevices.forEach { device ->
+                    DiscoveredDeviceRow(
+                        device = device,
+                        onConnect = { onAddDevice(device.address, device.name ?: "Polar Device") },
+                    )
+                    Spacer(Modifier.height(4.dp))
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+
+            // Scan button
+            OutlinedButton(
+                onClick = { if (isPolarScanning) onStopScan() else onStartScan() },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.BluetoothSearching,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(if (isPolarScanning) "Stop Scan" else "Add Polar Device")
+            }
+        }
+    }
+}
+
+@Composable
+private fun PolarDeviceRow(
+    device: PolarDevice,
+    isSyncing: Boolean,
+    onSyncNow: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                RoundedCornerShape(8.dp),
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = device.name,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            val lastSync = device.lastSyncTime
+            Text(
+                text = if (lastSync != null) {
+                    "Last sync: ${formatTimestamp(lastSync)}"
+                } else {
+                    "Never synced"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        OutlinedButton(
+            onClick = onSyncNow,
+            enabled = !isSyncing,
+            shape = RoundedCornerShape(8.dp),
+        ) {
+            Text(if (isSyncing) "Syncing..." else "Sync Now")
+        }
+        IconButton(onClick = onRemove) {
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = "Remove device",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+}
+
+@Composable
 private fun ConnectionDot(connectionState: ConnectionState) {
     val color = when (connectionState) {
         ConnectionState.CONNECTED -> Success
@@ -561,6 +725,27 @@ private fun ConnectionState.label(): String = when (this) {
     ConnectionState.SCANNING -> "Scanning"
     ConnectionState.RECONNECTING -> "Reconnecting"
     ConnectionState.DISCONNECTED -> "Disconnected"
+}
+
+@Composable
+private fun ServerStatusDot(serverStatus: ServerStatus) {
+    val color = when (serverStatus) {
+        ServerStatus.CONNECTED -> Success
+        ServerStatus.CHECKING -> Warning
+        ServerStatus.UNREACHABLE -> MaterialTheme.colorScheme.error
+    }
+    Box(
+        modifier = Modifier
+            .size(8.dp)
+            .clip(CircleShape)
+            .background(color),
+    )
+}
+
+private fun ServerStatus.label(): String = when (this) {
+    ServerStatus.CONNECTED -> "Server Connected"
+    ServerStatus.CHECKING -> "Checking..."
+    ServerStatus.UNREACHABLE -> "Server Unreachable"
 }
 
 private fun formatTimestamp(epochMs: Long): String {

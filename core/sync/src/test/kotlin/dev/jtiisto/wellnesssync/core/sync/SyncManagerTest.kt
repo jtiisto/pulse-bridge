@@ -2,10 +2,12 @@ package dev.jtiisto.wellnesssync.core.sync
 
 import dev.jtiisto.wellnesssync.core.common.EnvironmentStore
 import dev.jtiisto.wellnesssync.core.common.SyncEnvironment
+import dev.jtiisto.wellnesssync.core.database.dao.AccelerometerSummaryDao
 import dev.jtiisto.wellnesssync.core.database.dao.IntervalDao
 import dev.jtiisto.wellnesssync.core.database.dao.SyncStatusDao
 import dev.jtiisto.wellnesssync.core.database.entity.IntervalEntity
 import dev.jtiisto.wellnesssync.core.database.entity.SyncStatusEntity
+import dev.jtiisto.wellnesssync.core.network.AccelerometerApi
 import dev.jtiisto.wellnesssync.core.network.IntervalApi
 import dev.jtiisto.wellnesssync.core.network.dto.HealthResponseDto
 import dev.jtiisto.wellnesssync.core.network.dto.IntervalBatchDto
@@ -23,8 +25,10 @@ import org.junit.jupiter.api.Test
 class SyncManagerTest {
 
     private lateinit var intervalDao: IntervalDao
+    private lateinit var accDao: AccelerometerSummaryDao
     private lateinit var syncStatusDao: SyncStatusDao
     private lateinit var intervalApi: IntervalApi
+    private lateinit var accApi: AccelerometerApi
     private lateinit var environmentStore: EnvironmentStore
     private lateinit var syncManager: SyncManager
 
@@ -43,8 +47,10 @@ class SyncManagerTest {
     @BeforeEach
     fun setUp() {
         intervalDao = mockk(relaxed = true)
+        accDao = mockk(relaxed = true)
         syncStatusDao = mockk(relaxed = true)
         intervalApi = mockk(relaxed = true)
+        accApi = mockk(relaxed = true)
         environmentStore = mockk {
             every { current } returns SyncEnvironment.TEST
         }
@@ -52,11 +58,14 @@ class SyncManagerTest {
         coEvery { intervalApi.health(any()) } returns HealthResponseDto(
             status = "ok", environment = "test", intervalsCount = 0,
         )
+        coEvery { accDao.getUnsyncedSummaries(any()) } returns emptyList()
 
         syncManager = SyncManager(
             intervalDao = intervalDao,
+            accDao = accDao,
             syncStatusDao = syncStatusDao,
             intervalApi = intervalApi,
+            accApi = accApi,
             environmentStore = environmentStore,
             config = SyncConfig(batchSize = 100),
         )

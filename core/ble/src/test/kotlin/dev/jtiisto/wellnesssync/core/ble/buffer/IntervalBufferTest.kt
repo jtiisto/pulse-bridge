@@ -197,6 +197,50 @@ class IntervalBufferTest {
     }
 
     @Test
+    fun `colliding timestamps across notifications are bumped to stay unique`() = runTest {
+        testScope = this
+        val buffer = createBuffer()
+
+        // Two notifications with the same receipt timestamp — the second would
+        // collide on the (deviceId, timestampDevice) PK and be silently dropped
+        buffer.add(createSample(timestampDevice = 1000L, rrIntervalsMs = listOf(800)), sessionId = "s1")
+        buffer.add(createSample(timestampDevice = 1000L, rrIntervalsMs = listOf(810)), sessionId = "s1")
+        buffer.flush()
+
+        val entities = insertedBatches[0]
+        assertEquals(2, entities.size)
+        assertEquals(1000L, entities[0].timestampDevice)
+        assertEquals(1001L, entities[1].timestampDevice)
+    }
+
+    @Test
+    fun `zero RR intervals within a notification get unique timestamps`() = runTest {
+        testScope = this
+        val buffer = createBuffer()
+
+        buffer.add(createSample(timestampDevice = 1000L, rrIntervalsMs = listOf(800, 0, 0)), sessionId = "s1")
+        buffer.flush()
+
+        val timestamps = insertedBatches[0].map { it.timestampDevice }
+        assertEquals(listOf(1000L, 1800L, 1801L), timestamps)
+    }
+
+    @Test
+    fun `timestamps are tracked independently per device`() = runTest {
+        testScope = this
+        val buffer = createBuffer()
+
+        buffer.add(createSample(deviceId = "garmin-001", timestampDevice = 1000L), sessionId = "s1")
+        buffer.add(createSample(deviceId = "garmin-002", timestampDevice = 1000L), sessionId = "s1")
+        buffer.flush()
+
+        val entities = insertedBatches[0]
+        // Different devices may share timestamps — the PK includes deviceId
+        assertEquals(1000L, entities[0].timestampDevice)
+        assertEquals(1000L, entities[1].timestampDevice)
+    }
+
+    @Test
     fun `session ID is propagated to entities`() = runTest {
         testScope = this
         val buffer = createBuffer()

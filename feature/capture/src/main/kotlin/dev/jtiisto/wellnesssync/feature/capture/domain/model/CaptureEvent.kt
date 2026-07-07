@@ -9,4 +9,11 @@ sealed interface CaptureEvent {
     data class RemoveKnownDevice(val address: String) : CaptureEvent
     data object DismissError : CaptureEvent
     data object PermissionsGranted : CaptureEvent
+
+    // Polar events
+    data class AddPolarDevice(val deviceId: String, val name: String) : CaptureEvent
+    data class RemovePolarDevice(val deviceId: String) : CaptureEvent
+    data class SyncPolarNow(val deviceId: String) : CaptureEvent
+    data object StartPolarScan : CaptureEvent
+    data object StopPolarScan : CaptureEvent
 }

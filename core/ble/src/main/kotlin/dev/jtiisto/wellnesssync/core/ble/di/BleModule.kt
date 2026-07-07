@@ -1,18 +1,33 @@
 package dev.jtiisto.wellnesssync.core.ble.di
 
+import com.polar.sdk.api.PolarBleApi
+import com.polar.sdk.api.PolarBleApiDefaultImpl
 import dev.jtiisto.wellnesssync.core.ble.buffer.IntervalBuffer
 import dev.jtiisto.wellnesssync.core.ble.connection.PriorityMultiplexer
 import dev.jtiisto.wellnesssync.core.ble.device.KnownDeviceStore
+import dev.jtiisto.wellnesssync.core.ble.polar.PolarDeviceDetector
+import dev.jtiisto.wellnesssync.core.ble.polar.PolarDeviceStore
+import dev.jtiisto.wellnesssync.core.ble.polar.PolarOfflineSync
+import dev.jtiisto.wellnesssync.core.ble.polar.PolarRecordingParser
+import dev.jtiisto.wellnesssync.core.ble.polar.PolarSyncServiceState
 import dev.jtiisto.wellnesssync.core.ble.scanner.BleScanner
 import dev.jtiisto.wellnesssync.core.ble.service.BleCaptureServiceState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import org.koin.core.qualifier.Qualifier
+import org.koin.core.qualifier.named
 import org.koin.dsl.module
 
+// Koin keys definitions by raw class — generics are erased — so the two
+// MutableStateFlow singles MUST carry distinct qualifiers or they collide.
+val bleCaptureStateQualifier: Qualifier = named("bleCaptureServiceState")
+val polarSyncStateQualifier: Qualifier = named("polarSyncServiceState")
+
 val bleModule = module {
-    single { MutableStateFlow(BleCaptureServiceState()) }
+    // Garmin BLE capture
+    single(bleCaptureStateQualifier) { MutableStateFlow(BleCaptureServiceState()) }
     single { PriorityMultiplexer() }
     single { BleScanner(get()) }
     single { KnownDeviceStore(get()) }
@@ -23,4 +38,28 @@ val bleModule = module {
             scope = scope,
         )
     }
+
+    // Polar offline sync
+    single(polarSyncStateQualifier) { MutableStateFlow(PolarSyncServiceState()) }
+    single {
+        PolarBleApiDefaultImpl.defaultImplementation(
+            get(),
+            setOf(
+                PolarBleApi.PolarBleSdkFeature.FEATURE_POLAR_OFFLINE_RECORDING,
+                PolarBleApi.PolarBleSdkFeature.FEATURE_DEVICE_INFO,
+                PolarBleApi.PolarBleSdkFeature.FEATURE_BATTERY_INFO,
+            ),
+        )
+    }
+    single { PolarRecordingParser() }
+    single {
+        PolarOfflineSync(
+            polarApi = get(),
+            intervalDao = get(),
+            accDao = get(),
+            parser = get(),
+        )
+    }
+    single { PolarDeviceStore(get()) }
+    single { PolarDeviceDetector(get()) }
 }

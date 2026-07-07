@@ -32,6 +32,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.work.runtime)
     implementation(libs.koin.android)
+    implementation(libs.ktor.client.core)
 
     testImplementation(libs.junit5.api)
     testRuntimeOnly(libs.junit5.engine)

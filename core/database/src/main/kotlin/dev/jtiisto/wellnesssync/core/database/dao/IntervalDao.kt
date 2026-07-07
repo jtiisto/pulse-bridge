@@ -56,4 +56,7 @@ interface IntervalDao {
 
     @Query("SELECT COUNT(*) FROM intervals")
     suspend fun getTotalCount(): Int
+
+    @Query("DELETE FROM intervals WHERE isSynced = 1")
+    suspend fun deleteSynced(): Int
 }

@@ -10,15 +10,18 @@ import dev.jtiisto.wellnesssync.core.ble.buffer.IntervalBuffer
 import dev.jtiisto.wellnesssync.core.ble.connection.GarminHrmConnection
 import dev.jtiisto.wellnesssync.core.ble.connection.PriorityMultiplexer
 import dev.jtiisto.wellnesssync.core.ble.device.KnownDeviceStore
+import dev.jtiisto.wellnesssync.core.ble.di.bleCaptureStateQualifier
 import dev.jtiisto.wellnesssync.core.ble.model.ConnectionState
 import dev.jtiisto.wellnesssync.core.ble.model.SensorPriority
 import dev.jtiisto.wellnesssync.core.database.dao.DeviceSessionDao
 import dev.jtiisto.wellnesssync.core.database.entity.DeviceSessionEntity
+import dev.jtiisto.wellnesssync.core.sync.SyncWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import org.koin.android.ext.android.inject
@@ -31,6 +34,7 @@ class BleCaptureService : Service() {
         const val EXTRA_DEVICE_NAME = "device_name"
         const val ACTION_STOP = "dev.jtiisto.wellnesssync.STOP_CAPTURE"
         private const val WAKE_LOCK_TAG = "WellnessSync:BleCapture"
+        private const val INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000L // 5 minutes
 
         fun startIntent(context: Context, deviceAddress: String, deviceName: String?): Intent {
             return Intent(context, BleCaptureService::class.java).apply {
@@ -46,7 +50,7 @@ class BleCaptureService : Service() {
         }
     }
 
-    private val serviceState: MutableStateFlow<BleCaptureServiceState> by inject()
+    private val serviceState: MutableStateFlow<BleCaptureServiceState> by inject(bleCaptureStateQualifier)
     private val intervalBuffer: IntervalBuffer by inject()
     private val multiplexer: PriorityMultiplexer by inject()
     private val sessionDao: DeviceSessionDao by inject()
@@ -56,6 +60,7 @@ class BleCaptureService : Service() {
     private var connection: GarminHrmConnection? = null
     private var collectJob: Job? = null
     private var stateObserveJob: Job? = null
+    private var inactivityJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var currentSessionId: String? = null
     private var intervalCount = 0
@@ -130,12 +135,20 @@ class BleCaptureService : Service() {
             // Register with multiplexer
             multiplexer.register(address, SensorPriority.GARMIN_ECG, conn.heartRateData)
 
-            // Observe connection state
+            // Observe connection state and manage inactivity timeout
             stateObserveJob = serviceScope.launch {
                 conn.connectionState.collect { connState ->
                     val updated = serviceState.value.copy(connectionState = connState)
                     serviceState.value = updated
                     updateNotification(updated)
+
+                    when (connState) {
+                        ConnectionState.DISCONNECTED, ConnectionState.RECONNECTING ->
+                            startInactivityTimer()
+                        ConnectionState.CONNECTED ->
+                            cancelInactivityTimer()
+                        else -> {} // SCANNING, CONNECTING — no action
+                    }
                 }
             }
 
@@ -143,6 +156,7 @@ class BleCaptureService : Service() {
             intervalBuffer.start()
             collectJob = serviceScope.launch {
                 multiplexer.authoritativeStream.collect { sample ->
+                    cancelInactivityTimer()
                     intervalCount++
                     val updated = serviceState.value.copy(
                         currentHr = sample.heartRateBpm,
@@ -199,9 +213,13 @@ class BleCaptureService : Service() {
             connection?.disconnect()
             multiplexer.unregister(connection?.deviceId ?: "")
 
+            // Trigger sync to push captured data
+            SyncWorker.enqueueSyncNow(this@BleCaptureService)
+
             // Clean up
             collectJob?.cancel()
             stateObserveJob?.cancel()
+            inactivityJob?.cancel()
             connection = null
             currentSessionId = null
             intervalCount = 0
@@ -213,6 +231,19 @@ class BleCaptureService : Service() {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
+    }
+
+    private fun startInactivityTimer() {
+        if (inactivityJob?.isActive == true) return
+        inactivityJob = serviceScope.launch {
+            delay(INACTIVITY_TIMEOUT_MS)
+            stopCapture()
+        }
+    }
+
+    private fun cancelInactivityTimer() {
+        inactivityJob?.cancel()
+        inactivityJob = null
     }
 
     @SuppressLint("WakelockTimeout")

@@ -146,6 +146,216 @@ def test_gap_flag_stored():
     assert row[0] == 1
 
 
+def make_accel_summary(device_id="AA:BB:CC:DD:EE:FF", window_start=1000):
+    return {
+        "device_id": device_id,
+        "window_start": window_start,
+        "magnitude_mean": 1.02,
+        "magnitude_std": 0.15,
+        "magnitude_max": 2.34,
+        "sample_count": 250,
+        "sensor_type": "polar_verity",
+        "session_id": "session-1",
+    }
+
+
+def test_accelerometer_batch_inserts_summaries():
+    summaries = [make_accel_summary(window_start=i * 1000) for i in range(5)]
+    resp = client.post(
+        "/api/v1/accelerometer/batch",
+        json={"summaries": summaries},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["accepted"] == 5
+    assert data["duplicates"] == 0
+    assert data["total_received"] == 5
+
+    health = client.get("/api/v1/health").json()
+    assert health["accelerometer_summaries_count"] == 5
+
+
+def test_accelerometer_batch_idempotent():
+    summaries = [make_accel_summary(window_start=100), make_accel_summary(window_start=200)]
+
+    resp1 = client.post("/api/v1/accelerometer/batch", json={"summaries": summaries})
+    assert resp1.json()["accepted"] == 2
+
+    resp2 = client.post("/api/v1/accelerometer/batch", json={"summaries": summaries})
+    data = resp2.json()
+    assert data["accepted"] == 0
+    assert data["duplicates"] == 2
+
+    health = client.get("/api/v1/health").json()
+    assert health["accelerometer_summaries_count"] == 2
+
+
+def test_accelerometer_batch_partial_duplicates():
+    batch1 = [make_accel_summary(window_start=100)]
+    client.post("/api/v1/accelerometer/batch", json={"summaries": batch1})
+
+    batch2 = [make_accel_summary(window_start=100), make_accel_summary(window_start=200)]
+    resp = client.post("/api/v1/accelerometer/batch", json={"summaries": batch2})
+    data = resp.json()
+    assert data["accepted"] == 1
+    assert data["duplicates"] == 1
+
+
+def test_accelerometer_empty_batch():
+    resp = client.post("/api/v1/accelerometer/batch", json={"summaries": []})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["accepted"] == 0
+    assert data["total_received"] == 0
+
+
+def test_health_includes_accelerometer_count():
+    # Start fresh — health should show 0 for both
+    health = client.get("/api/v1/health").json()
+    assert health["intervals_count"] == 0
+    assert health["accelerometer_summaries_count"] == 0
+
+    # Add some of each
+    client.post(
+        "/api/v1/intervals/batch",
+        json={"intervals": [make_interval(ts=100)]},
+    )
+    client.post(
+        "/api/v1/accelerometer/batch",
+        json={"summaries": [make_accel_summary(window_start=100)]},
+    )
+
+    health = client.get("/api/v1/health").json()
+    assert health["intervals_count"] == 1
+    assert health["accelerometer_summaries_count"] == 1
+
+
+def test_accelerometer_environment_isolation():
+    prod_summary = [make_accel_summary(window_start=100)]
+    test_summary = [make_accel_summary(window_start=200)]
+
+    client.post("/api/v1/accelerometer/batch", json={"summaries": prod_summary})
+    client.post(
+        "/api/v1/accelerometer/batch",
+        json={"summaries": test_summary},
+        headers={"X-Environment": "test"},
+    )
+
+    prod_health = client.get("/api/v1/health").json()
+    test_health = client.get(
+        "/api/v1/health", headers={"X-Environment": "test"}
+    ).json()
+
+    assert prod_health["accelerometer_summaries_count"] == 1
+    assert test_health["accelerometer_summaries_count"] == 1
+
+
+def test_health_unknown_environment_rejected():
+    resp = client.get("/api/v1/health", headers={"X-Environment": "staging"})
+    assert resp.status_code == 400
+    assert "staging" in resp.json()["detail"]
+
+
+def test_intervals_batch_unknown_environment_rejected():
+    resp = client.post(
+        "/api/v1/intervals/batch",
+        json={"intervals": [make_interval(ts=100)]},
+        headers={"X-Environment": "staging"},
+    )
+    assert resp.status_code == 400
+    assert "staging" in resp.json()["detail"]
+
+
+def test_accelerometer_batch_unknown_environment_rejected():
+    resp = client.post(
+        "/api/v1/accelerometer/batch",
+        json={"summaries": [make_accel_summary(window_start=100)]},
+        headers={"X-Environment": "staging"},
+    )
+    assert resp.status_code == 400
+    assert "staging" in resp.json()["detail"]
+
+
+def test_missing_environment_defaults_to_production():
+    # No X-Environment header — data must land in the production DB.
+    client.post(
+        "/api/v1/intervals/batch",
+        json={"intervals": [make_interval(ts=100)]},
+    )
+
+    from database import get_db
+    prod_conn = get_db("production")
+    prod_count = prod_conn.execute("SELECT COUNT(*) FROM intervals").fetchone()[0]
+    prod_conn.close()
+
+    test_conn = get_db("test")
+    test_count = test_conn.execute("SELECT COUNT(*) FROM intervals").fetchone()[0]
+    test_conn.close()
+
+    assert prod_count == 1
+    assert test_count == 0
+
+
+def test_intervals_batch_missing_required_field_rejected():
+    interval = make_interval(ts=100)
+    del interval["heart_rate_bpm"]
+    resp = client.post("/api/v1/intervals/batch", json={"intervals": [interval]})
+    assert resp.status_code == 422
+
+
+def test_accelerometer_batch_missing_required_field_rejected():
+    summary = make_accel_summary(window_start=100)
+    del summary["magnitude_mean"]
+    resp = client.post("/api/v1/accelerometer/batch", json={"summaries": [summary]})
+    assert resp.status_code == 422
+
+
+def test_intervals_within_batch_duplicate_pk():
+    # Two records with identical device_id + timestamp_device in ONE request.
+    dup = [make_interval(ts=100), make_interval(ts=100)]
+    resp = client.post("/api/v1/intervals/batch", json={"intervals": dup})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_received"] == 2
+    assert data["accepted"] == 1
+    assert data["duplicates"] == 1
+
+    health = client.get("/api/v1/health").json()
+    assert health["intervals_count"] == 1
+
+
+def test_accelerometer_within_batch_duplicate_pk():
+    # Two records with identical device_id + window_start in ONE request.
+    dup = [make_accel_summary(window_start=100), make_accel_summary(window_start=100)]
+    resp = client.post("/api/v1/accelerometer/batch", json={"summaries": dup})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_received"] == 2
+    assert data["accepted"] == 1
+    assert data["duplicates"] == 1
+
+    health = client.get("/api/v1/health").json()
+    assert health["accelerometer_summaries_count"] == 1
+
+
+def test_accelerometer_batch_without_session_id():
+    summary = make_accel_summary(window_start=100)
+    del summary["session_id"]
+    resp = client.post("/api/v1/accelerometer/batch", json={"summaries": [summary]})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["accepted"] == 1
+    assert data["total_received"] == 1
+
+    from database import get_db
+    conn = get_db("production")
+    row = conn.execute(
+        "SELECT session_id FROM accelerometer_summaries WHERE window_start = 100"
+    ).fetchone()
+    conn.close()
+    assert row[0] is None
+
+
 @pytest.fixture(scope="session", autouse=True)
 def cleanup():
     yield

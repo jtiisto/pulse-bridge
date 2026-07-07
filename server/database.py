@@ -33,6 +33,22 @@ CREATE TABLE IF NOT EXISTS device_sessions (
     average_hr INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS accelerometer_summaries (
+    device_id TEXT NOT NULL,
+    window_start INTEGER NOT NULL,
+    magnitude_mean REAL NOT NULL,
+    magnitude_std REAL NOT NULL,
+    magnitude_max REAL NOT NULL,
+    sample_count INTEGER NOT NULL,
+    sensor_type TEXT NOT NULL,
+    session_id TEXT,
+    synced_at INTEGER NOT NULL,
+    PRIMARY KEY (device_id, window_start)
+);
+
+CREATE INDEX IF NOT EXISTS idx_accel_window ON accelerometer_summaries(window_start);
+CREATE INDEX IF NOT EXISTS idx_accel_session ON accelerometer_summaries(session_id);
+
 CREATE TABLE IF NOT EXISTS sync_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     synced_at INTEGER NOT NULL,
@@ -93,4 +109,39 @@ def insert_intervals(
 
     conn.commit()
     duplicates = len(intervals) - inserted
+    return inserted, duplicates
+
+
+def insert_accelerometer_summaries(
+    conn: sqlite3.Connection,
+    summaries: list[dict],
+) -> tuple[int, int]:
+    """Insert accelerometer summaries with INSERT OR IGNORE. Returns (inserted, duplicates)."""
+    cursor = conn.cursor()
+    inserted = 0
+    for summary in summaries:
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO accelerometer_summaries (
+                device_id, window_start, magnitude_mean, magnitude_std,
+                magnitude_max, sample_count, sensor_type, session_id, synced_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                summary["device_id"],
+                summary["window_start"],
+                summary["magnitude_mean"],
+                summary["magnitude_std"],
+                summary["magnitude_max"],
+                summary["sample_count"],
+                summary["sensor_type"],
+                summary.get("session_id"),
+                summary["synced_at"],
+            ),
+        )
+        if cursor.rowcount > 0:
+            inserted += 1
+
+    conn.commit()
+    duplicates = len(summaries) - inserted
     return inserted, duplicates
