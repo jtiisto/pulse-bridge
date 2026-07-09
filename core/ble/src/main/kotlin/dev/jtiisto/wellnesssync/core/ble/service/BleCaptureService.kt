@@ -60,6 +60,7 @@ class BleCaptureService : Service() {
     private var connection: GarminHrmConnection? = null
     private var collectJob: Job? = null
     private var stateObserveJob: Job? = null
+    private var detailObserveJob: Job? = null
     private var inactivityJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var currentSessionId: String? = null
@@ -152,6 +153,15 @@ class BleCaptureService : Service() {
                 }
             }
 
+            // Surface connect retry progress/failures in the UI
+            detailObserveJob = serviceScope.launch {
+                conn.connectionDetail.collect { detail ->
+                    val updated = serviceState.value.copy(error = detail)
+                    serviceState.value = updated
+                    updateNotification(updated)
+                }
+            }
+
             // Collect heart rate data and feed to buffer
             intervalBuffer.start()
             collectJob = serviceScope.launch {
@@ -219,6 +229,7 @@ class BleCaptureService : Service() {
             // Clean up
             collectJob?.cancel()
             stateObserveJob?.cancel()
+            detailObserveJob?.cancel()
             inactivityJob?.cancel()
             connection = null
             currentSessionId = null

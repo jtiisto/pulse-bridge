@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import dev.jtiisto.wellnesssync.core.ble.model.BleDevice
 import dev.jtiisto.wellnesssync.core.ble.model.ConnectionState
@@ -33,6 +34,7 @@ class GarminHrmConnection(
     private val address: String,
     private val scope: CoroutineScope,
     private val reconnectionStrategy: ReconnectionStrategy = ReconnectionStrategy(),
+    private val connectTimeoutMs: Long = DEFAULT_CONNECT_TIMEOUT_MS,
 ) : BleDeviceConnection {
 
     companion object {
@@ -40,6 +42,10 @@ class GarminHrmConnection(
         val HRM_MEASUREMENT_UUID: UUID = UUID.fromString("00002a37-0000-1000-8000-00805f9b34fb")
         val CLIENT_CHARACTERISTIC_CONFIG: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val GAP_THRESHOLD_MS = 3000L
+
+        // Android takes ~30 s to report a failed direct connect (and sometimes
+        // never calls back at all) — abort sooner so retries stay responsive
+        const val DEFAULT_CONNECT_TIMEOUT_MS = 15_000L
     }
 
     override val deviceId: String = address
@@ -50,20 +56,32 @@ class GarminHrmConnection(
     private val _heartRateData = MutableSharedFlow<HeartRateSample>(extraBufferCapacity = 64)
     override val heartRateData: Flow<HeartRateSample> = _heartRateData.asSharedFlow()
 
+    /** Human-readable connect progress/failure detail for the UI; null when healthy. */
+    private val _connectionDetail = MutableStateFlow<String?>(null)
+    val connectionDetail: StateFlow<String?> = _connectionDetail.asStateFlow()
+
     private var gatt: BluetoothGatt? = null
     private val lastSampleTimestamp = AtomicLong(0L)
     private var reconnectJob: Job? = null
+    private var connectWatchdogJob: Job? = null
 
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    cancelConnectWatchdog()
                     _connectionState.value = ConnectionState.CONNECTED
+                    _connectionDetail.value = null
                     reconnectionStrategy.reset()
-                    gatt.discoverServices()
+                    if (!gatt.discoverServices()) {
+                        // Stack busy — a CONNECTED link with no services never
+                        // produces data, so force the disconnect/retry path
+                        gatt.disconnect()
+                    }
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
+                    cancelConnectWatchdog()
                     _connectionState.value = ConnectionState.DISCONNECTED
                     gatt.close()
                     this@GarminHrmConnection.gatt = null
@@ -74,17 +92,26 @@ class GarminHrmConnection(
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            if (status != BluetoothGatt.GATT_SUCCESS) return
-
-            val hrmService = gatt.getService(HRM_SERVICE_UUID) ?: return
-            val hrmCharacteristic = hrmService.getCharacteristic(HRM_MEASUREMENT_UUID) ?: return
+            val hrmCharacteristic = if (status == BluetoothGatt.GATT_SUCCESS) {
+                gatt.getService(HRM_SERVICE_UUID)?.getCharacteristic(HRM_MEASUREMENT_UUID)
+            } else {
+                null
+            }
+            if (hrmCharacteristic == null) {
+                // Returning here would leave a silent CONNECTED-without-data
+                // stall; disconnecting routes through the retry path instead
+                gatt.disconnect()
+                return
+            }
 
             gatt.setCharacteristicNotification(hrmCharacteristic, true)
 
             val descriptor = hrmCharacteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG)
-            if (descriptor != null) {
-                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                gatt.writeDescriptor(descriptor)
+            if (descriptor == null ||
+                gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) !=
+                BluetoothStatusCodes.SUCCESS
+            ) {
+                gatt.disconnect()
             }
         }
 
@@ -117,17 +144,34 @@ class GarminHrmConnection(
 
         _connectionState.value = ConnectionState.CONNECTING
 
-        val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        val device: BluetoothDevice = bluetoothManager.adapter.getRemoteDevice(address)
-        gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        val newGatt = try {
+            val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            val device: BluetoothDevice = bluetoothManager.adapter.getRemoteDevice(address)
+            device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        } catch (e: Exception) {
+            null
+        }
+
+        if (newGatt == null) {
+            // Adapter off or invalid address — no callback will ever arrive,
+            // so this must not be left sitting in CONNECTING
+            _connectionState.value = ConnectionState.DISCONNECTED
+            attemptReconnect()
+            return
+        }
+
+        gatt = newGatt
+        startConnectWatchdog()
     }
 
     @SuppressLint("MissingPermission")
     override suspend fun disconnect() {
         reconnectJob?.cancel()
         reconnectJob = null
+        cancelConnectWatchdog()
         reconnectionStrategy.reset()
         _connectionState.value = ConnectionState.DISCONNECTED
+        _connectionDetail.value = null
         gatt?.disconnect()
         gatt?.close()
         gatt = null
@@ -152,16 +196,41 @@ class GarminHrmConnection(
     }
 
     private fun attemptReconnect() {
-        if (!reconnectionStrategy.hasAttemptsRemaining) return
+        if (!reconnectionStrategy.hasAttemptsRemaining) {
+            _connectionDetail.value =
+                "Unable to connect after ${reconnectionStrategy.currentAttempt} attempts"
+            return
+        }
         _connectionState.value = ConnectionState.RECONNECTING
 
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
             val delayDuration = reconnectionStrategy.nextDelay()
+            _connectionDetail.value =
+                "Connect attempt ${reconnectionStrategy.currentAttempt} failed — retrying"
             delay(delayDuration)
             if (_connectionState.value == ConnectionState.RECONNECTING) {
                 connect()
             }
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startConnectWatchdog() {
+        connectWatchdogJob?.cancel()
+        connectWatchdogJob = scope.launch {
+            delay(connectTimeoutMs)
+            if (_connectionState.value == ConnectionState.CONNECTING) {
+                gatt?.close()
+                gatt = null
+                _connectionState.value = ConnectionState.DISCONNECTED
+                attemptReconnect()
+            }
+        }
+    }
+
+    private fun cancelConnectWatchdog() {
+        connectWatchdogJob?.cancel()
+        connectWatchdogJob = null
     }
 }

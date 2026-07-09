@@ -70,10 +70,13 @@ class ReconnectionStrategyTest {
     }
 
     @Test
-    fun `default config has indefinite attempts`() {
+    fun `default config bounds attempts so retries cannot loop forever`() {
         val strategy = ReconnectionStrategy()
-        // Should always have attempts remaining with default config
-        repeat(100) { strategy.nextDelay() }
-        assertTrue(strategy.hasAttemptsRemaining)
+
+        repeat(ReconnectionConfig.DEFAULT_MAX_ATTEMPTS) {
+            assertTrue(strategy.hasAttemptsRemaining)
+            strategy.nextDelay()
+        }
+        assertFalse(strategy.hasAttemptsRemaining)
     }
 }

@@ -13,6 +13,9 @@ data class ReconnectionConfig(
         val DEFAULT_INITIAL_DELAY: Duration = 1.seconds
         const val DEFAULT_MULTIPLIER: Double = 2.0
         val DEFAULT_MAX_DELAY: Duration = 30.seconds
-        const val DEFAULT_MAX_ATTEMPTS: Int = Int.MAX_VALUE // indefinite
+
+        // Bounded so a dead connection can't retry silently forever; the
+        // capture service's inactivity timeout remains the outer safety net
+        const val DEFAULT_MAX_ATTEMPTS: Int = 15
     }
 }
