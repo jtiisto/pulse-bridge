@@ -1,7 +1,9 @@
-# Wellness Sync
+# Wellness Sync (pulse-bridge)
 
 ## Overview
 Native Android app acting as a BLE data bridge — captures heart rate and RR interval data from BLE sensors (Garmin HRM chest strap in Phase 1, Polar Verity Sense in Phase 2), stores locally in Room, and batch-syncs to a server.
+
+Published at https://github.com/jtiisto/pulse-bridge (repo renamed for clarity; local directory, base package, and app label remain Wellness Sync).
 
 ## Tech Stack
 - Kotlin + Jetpack Compose
