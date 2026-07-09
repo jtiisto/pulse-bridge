@@ -4,16 +4,15 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- QRS pulse trace, extremes symmetric around the 54,54 center -->
+    <!-- Single-color layer for themed icons; system applies the tint -->
     <path
         android:pathData="M26,54 L40,54 L45,61 L52,34 L59,74 L64,54 L72,54"
-        android:strokeColor="#4ADE80"
+        android:strokeColor="#FFFFFF"
         android:strokeWidth="6"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
         android:fillColor="#00000000" />
-    <!-- Live-cursor dot -->
     <path
         android:pathData="M80.5,54 m-4.5,0 a4.5,4.5 0 1,0 9,0 a4.5,4.5 0 1,0 -9,0"
-        android:fillColor="#E94560" />
+        android:fillColor="#FFFFFF" />
 </vector>
