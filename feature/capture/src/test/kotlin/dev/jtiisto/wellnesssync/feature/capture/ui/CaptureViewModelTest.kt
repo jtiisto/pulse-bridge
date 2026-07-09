@@ -4,6 +4,8 @@ import android.app.Application
 import app.cash.turbine.test
 import dev.jtiisto.wellnesssync.core.ble.device.KnownDevice
 import dev.jtiisto.wellnesssync.core.ble.model.ConnectionState
+import dev.jtiisto.wellnesssync.core.ble.model.HeartRateSample
+import dev.jtiisto.wellnesssync.core.ble.model.SensorPriority
 import dev.jtiisto.wellnesssync.core.ble.polar.PolarSyncServiceState
 import dev.jtiisto.wellnesssync.core.ble.service.BleCaptureServiceState
 import dev.jtiisto.wellnesssync.core.database.entity.SyncStatusEntity
@@ -35,15 +37,18 @@ class CaptureViewModelTest {
 
     private val testDispatcher = StandardTestDispatcher()
     private lateinit var serviceStateFlow: MutableStateFlow<BleCaptureServiceState>
+    private lateinit var beatFlow: MutableSharedFlow<HeartRateSample>
     private lateinit var repository: CaptureRepository
     private lateinit var serverHealthMonitor: ServerHealthMonitor
     private lateinit var application: Application
     private lateinit var viewModel: CaptureViewModel
+    private var clockMs = 100_000L
 
     @BeforeEach
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
         serviceStateFlow = MutableStateFlow(BleCaptureServiceState())
+        beatFlow = MutableSharedFlow()
         application = mockk(relaxed = true)
         repository = mockk(relaxed = true) {
             every { serviceStateFlow } returns this@CaptureViewModelTest.serviceStateFlow
@@ -52,11 +57,12 @@ class CaptureViewModelTest {
             every { syncStatus } returns flowOf(null)
             every { getKnownDevices() } returns emptyList()
             every { getPolarDevices() } returns emptyList()
+            every { beatStream } returns beatFlow
         }
         serverHealthMonitor = mockk(relaxed = true) {
             every { status } returns MutableStateFlow(ServerStatus.CHECKING)
         }
-        viewModel = CaptureViewModel(application, repository, serverHealthMonitor)
+        viewModel = CaptureViewModel(application, repository, serverHealthMonitor, clock = { clockMs })
     }
 
     @AfterEach
@@ -190,6 +196,51 @@ class CaptureViewModelTest {
             val state = awaitItem()
             assertEquals(42, state.unsyncedCount)
         }
+    }
+
+    private fun beatSample(rrs: List<Int>) = HeartRateSample(
+        deviceId = "AA:BB:CC:DD:EE:FF",
+        timestampDevice = clockMs,
+        heartRateBpm = 70,
+        rrIntervalsMs = rrs,
+        sensorPriority = SensorPriority.GARMIN_ECG,
+        sensorType = "garmin_hrm",
+    )
+
+    @Test
+    fun `beats update chart points while capturing`() = runTest {
+        serviceStateFlow.value = BleCaptureServiceState(isRunning = true)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        beatFlow.emit(beatSample(rrs = listOf(800)))
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val points = viewModel.state.value.chartPoints
+        assertEquals(1, points.size)
+        assertEquals(75f, points.first().hrBpm)
+    }
+
+    @Test
+    fun `chart points are cleared when capture stops`() = runTest {
+        serviceStateFlow.value = BleCaptureServiceState(isRunning = true)
+        testDispatcher.scheduler.advanceUntilIdle()
+        beatFlow.emit(beatSample(rrs = listOf(800)))
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals(1, viewModel.state.value.chartPoints.size)
+
+        serviceStateFlow.value = BleCaptureServiceState(isRunning = false)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.chartPoints.isEmpty())
+        assertEquals(0, beatFlow.subscriptionCount.value)
+    }
+
+    @Test
+    fun `beats are not collected when not capturing`() = runTest {
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(0, beatFlow.subscriptionCount.value)
+        assertTrue(viewModel.state.value.chartPoints.isEmpty())
     }
 
     @Test

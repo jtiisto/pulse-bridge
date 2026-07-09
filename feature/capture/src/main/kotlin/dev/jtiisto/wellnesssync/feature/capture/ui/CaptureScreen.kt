@@ -161,6 +161,9 @@ private fun CaptureScreenContent(
                 item {
                     StatusCard(state)
                 }
+                item {
+                    TachogramChart(points = state.chartPoints)
+                }
             }
 
             // Device section — shown when not capturing

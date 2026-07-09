@@ -65,6 +65,8 @@ Base package: `dev.jtiisto.wellnesssync`
 ## Current Status
 Phase 1 complete (all 8 steps). See `plans/phase1_implementation.md` for details.
 
-Phase 2 Steps 1-7 complete (Polar Verity Sense integration). 106 Android unit tests + 23 server tests + 21 instrumented tests = 150 tests, 0 failures. Step 8 (integration testing with physical PVS device) pending. Spec: `specs/polar_offline_sync.md`. Plan: `plans/phase2_implementation.md`.
+Phase 2 Steps 1-7 complete (Polar Verity Sense integration). 125 Android unit tests + 23 server tests + 21 instrumented tests = 169 tests, 0 failures. Step 8 (integration testing with physical PVS device) pending. Spec: `specs/polar_offline_sync.md`. Plan: `plans/phase2_implementation.md`.
+
+Live tachogram chart implemented (scrolling 10 s instantaneous-HR chart with grid on the capture screen, shown while capturing). Spec: `specs/live_tachogram_chart.md`. On-device visual verification pending.
 
 2026-07-07 bug-fix pass (uncommitted, pending on-device verification): fixed Koin type-erasure collision on the two `MutableStateFlow` singles in `bleModule` (named qualifiers — the prime suspect for the Garmin strap no longer connecting), Polar PendingIntent scan registration moved to app startup and made idempotent, capture start now stops all active scans, `DatabaseCleaner` deletes only synced rows, per-device monotonic timestamps in `IntervalBuffer`/`PolarRecordingParser` (PK-collision data loss), Ktor `expectSuccess` + no-retry on 4xx in `SyncWorker`, server rejects unknown `X-Environment` with 400.

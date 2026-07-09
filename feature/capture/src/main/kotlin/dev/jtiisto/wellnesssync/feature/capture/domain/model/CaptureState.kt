@@ -12,6 +12,7 @@ data class CaptureState(
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
     val serverStatus: ServerStatus = ServerStatus.CHECKING,
     val currentHr: Int? = null,
+    val chartPoints: List<BeatPoint> = emptyList(),
     val deviceName: String? = null,
     val intervalCount: Int = 0,
     val unsyncedCount: Int = 0,

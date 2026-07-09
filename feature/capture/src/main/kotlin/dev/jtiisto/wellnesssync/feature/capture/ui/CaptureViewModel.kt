@@ -1,11 +1,13 @@
 package dev.jtiisto.wellnesssync.feature.capture.ui
 
 import android.app.Application
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.jtiisto.wellnesssync.core.ble.scanner.DiscoveredDevice
 import dev.jtiisto.wellnesssync.core.network.ServerHealthMonitor
 import dev.jtiisto.wellnesssync.feature.capture.data.CaptureRepository
+import dev.jtiisto.wellnesssync.feature.capture.domain.TachogramBuffer
 import dev.jtiisto.wellnesssync.feature.capture.domain.model.CaptureEffect
 import dev.jtiisto.wellnesssync.feature.capture.domain.model.CaptureEvent
 import dev.jtiisto.wellnesssync.feature.capture.domain.model.CaptureState
@@ -22,6 +24,7 @@ class CaptureViewModel(
     application: Application,
     private val repository: CaptureRepository,
     private val serverHealthMonitor: ServerHealthMonitor,
+    clock: () -> Long = { SystemClock.elapsedRealtime() },
 ) : AndroidViewModel(application) {
 
     private val _state = MutableStateFlow(CaptureState())
@@ -32,6 +35,8 @@ class CaptureViewModel(
 
     private var scanJob: Job? = null
     private var polarScanJob: Job? = null
+    private var beatJob: Job? = null
+    private val tachogramBuffer = TachogramBuffer(clock)
     private val discoveredSet = mutableSetOf<String>()
     private val discoveredPolarSet = mutableSetOf<String>()
 
@@ -207,9 +212,30 @@ class CaptureViewModel(
                 // Refresh known devices when capture starts (new device may have been saved)
                 if (serviceState.isRunning) {
                     loadKnownDevices()
+                    startBeatCollection()
+                } else {
+                    stopBeatCollection()
                 }
             }
         }
+    }
+
+    private fun startBeatCollection() {
+        if (beatJob?.isActive == true) return
+        beatJob = viewModelScope.launch {
+            repository.beatStream.collect { sample ->
+                tachogramBuffer.add(sample)
+                _state.update { it.copy(chartPoints = tachogramBuffer.points()) }
+            }
+        }
+    }
+
+    private fun stopBeatCollection() {
+        if (beatJob == null) return
+        beatJob?.cancel()
+        beatJob = null
+        tachogramBuffer.reset()
+        _state.update { it.copy(chartPoints = emptyList()) }
     }
 
     private fun observePolarSyncState() {

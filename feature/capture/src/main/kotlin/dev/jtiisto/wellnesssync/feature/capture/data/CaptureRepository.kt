@@ -1,8 +1,10 @@
 package dev.jtiisto.wellnesssync.feature.capture.data
 
 import android.content.Context
+import dev.jtiisto.wellnesssync.core.ble.connection.PriorityMultiplexer
 import dev.jtiisto.wellnesssync.core.ble.device.KnownDevice
 import dev.jtiisto.wellnesssync.core.ble.device.KnownDeviceStore
+import dev.jtiisto.wellnesssync.core.ble.model.HeartRateSample
 import dev.jtiisto.wellnesssync.core.ble.polar.PolarDevice
 import dev.jtiisto.wellnesssync.core.ble.polar.PolarDeviceDetector
 import dev.jtiisto.wellnesssync.core.ble.polar.PolarDeviceStore
@@ -28,10 +30,15 @@ class CaptureRepository(
     private val knownDeviceStore: KnownDeviceStore,
     private val polarDeviceStore: PolarDeviceStore,
     private val polarDeviceDetector: PolarDeviceDetector,
+    private val multiplexer: PriorityMultiplexer,
 ) {
     val serviceStateFlow: Flow<BleCaptureServiceState> = serviceState
 
     val polarSyncStateFlow: Flow<PolarSyncServiceState> = polarSyncState
+
+    // Hot stream (SharedFlow-backed) — safe to collect alongside the capture
+    // service; the UI sees exactly the beats being recorded
+    val beatStream: Flow<HeartRateSample> = multiplexer.authoritativeStream
 
     val unsyncedCount: Flow<Int> = intervalDao.getUnsyncedCount()
 

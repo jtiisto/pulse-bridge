@@ -18,6 +18,7 @@ val captureModule = module {
             knownDeviceStore = get(),
             polarDeviceStore = get(),
             polarDeviceDetector = get(),
+            multiplexer = get(),
         )
     }
     viewModel { CaptureViewModel(get(), get(), get()) }
