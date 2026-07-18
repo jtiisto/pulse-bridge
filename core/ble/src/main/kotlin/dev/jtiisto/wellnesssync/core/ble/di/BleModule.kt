@@ -29,7 +29,7 @@ val bleModule = module {
     // Garmin BLE capture
     single(bleCaptureStateQualifier) { MutableStateFlow(BleCaptureServiceState()) }
     single { PriorityMultiplexer() }
-    single { BleScanner(get()) }
+    single { BleScanner(get(), get()) }
     single { KnownDeviceStore(get()) }
     single {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -58,6 +58,7 @@ val bleModule = module {
             intervalDao = get(),
             accDao = get(),
             parser = get(),
+            diagnosticLog = get(),
         )
     }
     single { PolarDeviceStore(get()) }

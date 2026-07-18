@@ -6,6 +6,7 @@ import com.polar.sdk.api.PolarBleApiCallback
 import com.polar.sdk.api.model.PolarDeviceInfo
 import com.polar.sdk.api.model.PolarOfflineRecordingData
 import com.polar.sdk.api.model.PolarOfflineRecordingEntry
+import dev.jtiisto.wellnesssync.core.common.DiagnosticLog
 import dev.jtiisto.wellnesssync.core.database.dao.AccelerometerSummaryDao
 import dev.jtiisto.wellnesssync.core.database.dao.IntervalDao
 import kotlinx.coroutines.CompletableDeferred
@@ -18,10 +19,12 @@ class PolarOfflineSync(
     private val intervalDao: IntervalDao,
     private val accDao: AccelerometerSummaryDao,
     private val parser: PolarRecordingParser,
+    private val diagnosticLog: DiagnosticLog,
     private val featureReadyTimeoutMs: Long = DEFAULT_FEATURE_TIMEOUT_MS,
 ) {
 
     suspend fun syncDevice(deviceId: String): PolarSyncResult {
+        diagnosticLog.log("polar", "syncDevice $deviceId started")
         var intervalsFetched = 0
         var summariesFetched = 0
         var recordingsProcessed = 0
@@ -36,12 +39,12 @@ class PolarOfflineSync(
             val entries = polarApi.listOfflineRecordings(deviceId).toList().await()
 
             if (entries.isEmpty()) {
-                Log.i(TAG, "No offline recordings found on device $deviceId")
+                diagnosticLog.log("polar", "no offline recordings on $deviceId")
                 disconnectQuietly(deviceId)
                 return PolarSyncResult()
             }
 
-            Log.i(TAG, "Found ${entries.size} recordings on device $deviceId")
+            diagnosticLog.log("polar", "found ${entries.size} recordings on $deviceId")
 
             // Filter to only PPI and ACC recordings
             val relevantEntries = entries.filter {
@@ -95,22 +98,27 @@ class PolarOfflineSync(
                         polarApi.removeOfflineRecord(deviceId, entry).await()
                         recordingsDeleted++
                     } catch (e: Exception) {
-                        Log.w(TAG, "Failed to delete recording from device: ${e.message}")
+                        diagnosticLog.log("polar", "delete failed for ${entry.path}: ${e.message}")
                         errors.add("Delete failed for ${entry.path}: ${e.message}")
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to process recording ${entry.path}: ${e.message}")
+                    diagnosticLog.log("polar", "fetch/parse failed for ${entry.path}: ${e.message}")
                     errors.add("Fetch/parse failed for ${entry.path}: ${e.message}")
                     // Continue to next recording — don't lose other data
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Sync failed for device $deviceId: ${e.message}")
+            diagnosticLog.log("polar", "sync FAILED for $deviceId: ${e.message}")
             errors.add("Sync failed: ${e.message}")
         } finally {
             disconnectQuietly(deviceId)
         }
 
+        diagnosticLog.log(
+            "polar",
+            "syncDevice $deviceId done: intervals=$intervalsFetched summaries=$summariesFetched " +
+                "processed=$recordingsProcessed deleted=$recordingsDeleted errors=${errors.size}",
+        )
         return PolarSyncResult(
             intervalsFetched = intervalsFetched,
             summariesFetched = summariesFetched,

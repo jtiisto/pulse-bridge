@@ -53,6 +53,13 @@ fun SettingsScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
+    LaunchedEffect(state.diagnosticUploadResult) {
+        state.diagnosticUploadResult?.let { result ->
+            snackbarHostState.showSnackbar(result)
+            viewModel.onEvent(SettingsEvent.DismissDiagnosticResult)
+        }
+    }
+
     LaunchedEffect(state.clearDataSuccess) {
         if (state.clearDataSuccess) {
             snackbarHostState.showSnackbar("Local data cleared")
@@ -112,6 +119,12 @@ private fun SettingsScreenContent(
 
             ClearDataCard(
                 onClear = { onEvent(SettingsEvent.RequestClearData) },
+            )
+
+            DiagnosticsCard(
+                entryCount = state.diagnosticCount,
+                uploadInProgress = state.diagnosticUploadInProgress,
+                onUpload = { onEvent(SettingsEvent.UploadDiagnostics) },
             )
         }
     }
@@ -246,6 +259,43 @@ private fun ClearDataCard(onClear: () -> Unit) {
                     modifier = Modifier.padding(end = 8.dp),
                 )
                 Text("Clear Synced Data")
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiagnosticsCard(
+    entryCount: Int,
+    uploadInProgress: Boolean,
+    onUpload: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = CardBackground),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Diagnostics",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "$entryCount buffered log entries (BLE, capture, sync). Upload to the server for remote debugging.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+
+            Button(
+                onClick = onUpload,
+                enabled = !uploadInProgress,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Text(if (uploadInProgress) "Uploading…" else "Upload Diagnostics Log")
             }
         }
     }

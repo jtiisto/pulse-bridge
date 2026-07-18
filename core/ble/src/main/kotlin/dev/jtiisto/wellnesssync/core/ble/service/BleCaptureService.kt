@@ -13,6 +13,7 @@ import dev.jtiisto.wellnesssync.core.ble.device.KnownDeviceStore
 import dev.jtiisto.wellnesssync.core.ble.di.bleCaptureStateQualifier
 import dev.jtiisto.wellnesssync.core.ble.model.ConnectionState
 import dev.jtiisto.wellnesssync.core.ble.model.SensorPriority
+import dev.jtiisto.wellnesssync.core.common.DiagnosticLog
 import dev.jtiisto.wellnesssync.core.database.dao.DeviceSessionDao
 import dev.jtiisto.wellnesssync.core.database.entity.DeviceSessionEntity
 import dev.jtiisto.wellnesssync.core.sync.SyncWorker
@@ -55,6 +56,7 @@ class BleCaptureService : Service() {
     private val multiplexer: PriorityMultiplexer by inject()
     private val sessionDao: DeviceSessionDao by inject()
     private val knownDeviceStore: KnownDeviceStore by inject()
+    private val diagnosticLog: DiagnosticLog by inject()
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var connection: GarminHrmConnection? = null
@@ -98,6 +100,8 @@ class BleCaptureService : Service() {
         // Avoid double-start
         if (connection != null) return
 
+        diagnosticLog.log("capture", "startCapture $name ($address)")
+
         val initialState = BleCaptureServiceState(
             isRunning = true,
             connectionState = ConnectionState.SCANNING,
@@ -130,6 +134,7 @@ class BleCaptureService : Service() {
                 context = this@BleCaptureService,
                 address = address,
                 scope = serviceScope,
+                diagnosticLog = diagnosticLog,
             )
             connection = conn
 
@@ -202,6 +207,7 @@ class BleCaptureService : Service() {
     }
 
     private fun stopCapture() {
+        diagnosticLog.log("capture", "stopCapture (intervals=$intervalCount)")
         serviceScope.launch {
             // Flush remaining buffer
             intervalBuffer.flush()
@@ -248,6 +254,7 @@ class BleCaptureService : Service() {
         if (inactivityJob?.isActive == true) return
         inactivityJob = serviceScope.launch {
             delay(INACTIVITY_TIMEOUT_MS)
+            diagnosticLog.log("capture", "inactivity timeout (${INACTIVITY_TIMEOUT_MS}ms) — stopping")
             stopCapture()
         }
     }

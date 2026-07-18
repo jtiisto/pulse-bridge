@@ -15,6 +15,7 @@ config.DB_FILES = {
     "production": config.DATA_DIR / "wellness_prod.db",
     "test": config.DATA_DIR / "wellness_test.db",
 }
+config.DIAG_DIR = config.DATA_DIR / "diagnostics"
 
 from main import app
 
@@ -354,6 +355,70 @@ def test_accelerometer_batch_without_session_id():
     ).fetchone()
     conn.close()
     assert row[0] is None
+
+
+def make_diagnostic_entry(timestamp_ms=1000, tag="BleScanner", message="scan started"):
+    return {
+        "timestamp_ms": timestamp_ms,
+        "tag": tag,
+        "message": message,
+    }
+
+
+def test_diagnostics_upload_happy_path():
+    entries = [make_diagnostic_entry(timestamp_ms=i) for i in range(3)]
+    resp = client.post(
+        "/api/v1/diagnostics/upload",
+        json={"device_info": "Pixel 8 / Android 15", "entries": entries},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["stored"] == 3
+
+    file_path = config.DIAG_DIR / data["file"]
+    assert file_path.exists()
+    # device_info header line + one line per entry.
+    assert len(file_path.read_text().splitlines()) == 4
+
+    file_path.unlink()
+
+
+def test_diagnostics_upload_env_in_filename():
+    resp = client.post(
+        "/api/v1/diagnostics/upload",
+        json={"device_info": None, "entries": [make_diagnostic_entry()]},
+        headers={"X-Environment": "test"},
+    )
+    assert resp.status_code == 200
+    file_name = resp.json()["file"]
+    assert file_name.startswith("diag_test_")
+
+    (config.DIAG_DIR / file_name).unlink()
+
+
+def test_diagnostics_upload_empty_entries():
+    resp = client.post(
+        "/api/v1/diagnostics/upload",
+        json={"entries": []},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["stored"] == 0
+
+    file_path = config.DIAG_DIR / data["file"]
+    assert file_path.exists()
+
+    file_path.unlink()
+
+
+def test_diagnostics_upload_unknown_environment_rejected():
+    resp = client.post(
+        "/api/v1/diagnostics/upload",
+        json={"entries": [make_diagnostic_entry()]},
+        headers={"X-Environment": "staging"},
+    )
+    assert resp.status_code == 400
+    assert "staging" in resp.json()["detail"]
 
 
 @pytest.fixture(scope="session", autouse=True)

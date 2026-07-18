@@ -44,3 +44,19 @@ class HealthResponse(BaseModel):
     environment: str
     intervals_count: int
     accelerometer_summaries_count: int = 0
+
+
+class DiagnosticEntry(BaseModel):
+    timestamp_ms: int
+    tag: str
+    message: str
+
+
+class DiagnosticUpload(BaseModel):
+    device_info: str | None = None
+    entries: list[DiagnosticEntry]
+
+
+class DiagnosticUploadResponse(BaseModel):
+    stored: int
+    file: str

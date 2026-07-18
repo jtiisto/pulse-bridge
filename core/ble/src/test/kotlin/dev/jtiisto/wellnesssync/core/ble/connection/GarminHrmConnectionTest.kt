@@ -10,6 +10,7 @@ import android.content.Context
 import dev.jtiisto.wellnesssync.core.ble.model.ConnectionState
 import dev.jtiisto.wellnesssync.core.ble.reconnect.ReconnectionConfig
 import dev.jtiisto.wellnesssync.core.ble.reconnect.ReconnectionStrategy
+import dev.jtiisto.wellnesssync.core.common.DiagnosticLog
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
@@ -57,6 +58,7 @@ class GarminHrmConnectionTest {
             context = context,
             address = ADDRESS,
             scope = this,
+            diagnosticLog = DiagnosticLog(),
             reconnectionStrategy = ReconnectionStrategy(ReconnectionConfig(maxAttempts = maxAttempts)),
         )
 

@@ -1,9 +1,18 @@
+import json
 import time
 
 from fastapi import FastAPI, Header, HTTPException
 
+from config import DIAG_DIR
 from database import get_db, insert_accelerometer_summaries, insert_intervals
-from models import AccelerometerBatch, HealthResponse, IntervalBatch, SyncResponse
+from models import (
+    AccelerometerBatch,
+    DiagnosticUpload,
+    DiagnosticUploadResponse,
+    HealthResponse,
+    IntervalBatch,
+    SyncResponse,
+)
 
 app = FastAPI(title="Wellness Sync Server", version="0.1.0")
 
@@ -102,3 +111,22 @@ def accelerometer_batch_sync(
         )
     finally:
         conn.close()
+
+
+@app.post("/api/v1/diagnostics/upload")
+def diagnostics_upload(
+    upload: DiagnosticUpload,
+    x_environment: str | None = Header(None),
+) -> DiagnosticUploadResponse:
+    env = resolve_environment(x_environment)
+    DIAG_DIR.mkdir(parents=True, exist_ok=True)
+    file_name = f"diag_{env}_{int(time.time() * 1000)}.jsonl"
+    file_path = DIAG_DIR / file_name
+
+    with file_path.open("w") as f:
+        if upload.device_info is not None:
+            f.write(json.dumps({"device_info": upload.device_info}) + "\n")
+        for entry in upload.entries:
+            f.write(entry.model_dump_json() + "\n")
+
+    return DiagnosticUploadResponse(stored=len(upload.entries), file=file_name)

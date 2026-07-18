@@ -7,6 +7,7 @@ import com.polar.sdk.api.model.PolarDeviceInfo
 import com.polar.sdk.api.model.PolarOfflineRecordingData
 import com.polar.sdk.api.model.PolarOfflineRecordingEntry
 import com.polar.sdk.api.model.PolarPpiData
+import dev.jtiisto.wellnesssync.core.common.DiagnosticLog
 import dev.jtiisto.wellnesssync.core.database.dao.AccelerometerSummaryDao
 import dev.jtiisto.wellnesssync.core.database.dao.IntervalDao
 import dev.jtiisto.wellnesssync.core.database.entity.AccelerometerSummaryEntity
@@ -52,6 +53,7 @@ class PolarOfflineSyncTest {
             intervalDao = intervalDao,
             accDao = accDao,
             parser = parser,
+            diagnosticLog = DiagnosticLog(),
             featureReadyTimeoutMs = 5000L,
         )
     }

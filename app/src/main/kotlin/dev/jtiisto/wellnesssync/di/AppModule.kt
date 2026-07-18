@@ -1,6 +1,7 @@
 package dev.jtiisto.wellnesssync.di
 
 import dev.jtiisto.wellnesssync.core.ble.di.bleModule
+import dev.jtiisto.wellnesssync.core.common.DiagnosticLog
 import dev.jtiisto.wellnesssync.core.common.EnvironmentStore
 import dev.jtiisto.wellnesssync.core.database.di.databaseModule
 import dev.jtiisto.wellnesssync.core.network.di.networkModule
@@ -13,5 +14,6 @@ import org.koin.dsl.module
 val appModule = module {
     includes(databaseModule, bleModule, networkModule, syncModule, captureModule)
     single { EnvironmentStore(get()) }
-    viewModel { SettingsViewModel(get(), get()) }
+    single { DiagnosticLog() }
+    viewModel { SettingsViewModel(get(), get(), get(), get()) }
 }

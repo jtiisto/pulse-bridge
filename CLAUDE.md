@@ -67,10 +67,12 @@ Base package: `dev.jtiisto.wellnesssync`
 ## Current Status
 Phase 1 complete (all 8 steps). See `plans/phase1_implementation.md` for details.
 
-Phase 2 Steps 1-7 complete (Polar Verity Sense integration). 130 Android unit tests + 23 server tests + 21 instrumented tests = 174 tests, 0 failures. Step 8 (integration testing with physical PVS device) pending. Spec: `specs/polar_offline_sync.md`. Plan: `plans/phase2_implementation.md`.
+Phase 2 Steps 1-7 complete (Polar Verity Sense integration). 138 Android unit tests + 27 server tests + 21 instrumented tests = 186 tests, 0 failures. Step 8 (integration testing with physical PVS device) pending. Spec: `specs/polar_offline_sync.md`. Plan: `plans/phase2_implementation.md`.
 
 Live tachogram chart implemented (scrolling 10 s instantaneous-HR chart with grid on the capture screen, shown while capturing). Spec: `specs/live_tachogram_chart.md`. On-device visual verification pending.
 
 2026-07-07 bug-fix pass (verified on device 2026-07-08 — strap connects, captures, syncs): fixed Koin type-erasure collision on the two `MutableStateFlow` singles in `bleModule` (named qualifiers — this was the Garmin connection regression), Polar PendingIntent scan registration moved to app startup and made idempotent, capture start now stops all active scans, `DatabaseCleaner` deletes only synced rows, per-device monotonic timestamps in `IntervalBuffer`/`PolarRecordingParser` (PK-collision data loss), Ktor `expectSuccess` + no-retry on 4xx in `SyncWorker`, server rejects unknown `X-Environment` with 400.
 
 2026-07-09 connection hardening: `GarminHrmConnection` gained a 15 s connect watchdog, null/exception handling around `connectGatt`, disconnect-instead-of-stall on failed service discovery, modern `writeDescriptor` API, and a `connectionDetail` flow surfaced as `error` in the capture UI; default reconnect attempts bounded at 15 (`ReconnectionConfig`). No silent CONNECTING/CONNECTED-without-data dead ends remain.
+
+2026-07-18 diagnostic log buffer (spec: `specs/diagnostic_log.md`): `DiagnosticLog` ring buffer in `core/common` instrumented across BLE connect (raw GATT status codes), scanner, capture service, Polar sync, and SyncWorker; uploaded via Settings → `POST /api/v1/diagnostics/upload` → JSONL files under `server/data/diagnostics/`. Built for remote debugging of the gym-time "strap won't connect mid-session" issue (suspected: strap stops BLE advertising while ANT+ keeps working; field test pending).

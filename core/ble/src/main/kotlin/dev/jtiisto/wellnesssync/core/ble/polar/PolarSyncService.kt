@@ -7,6 +7,7 @@ import android.content.Intent
 import android.os.IBinder
 import android.os.PowerManager
 import dev.jtiisto.wellnesssync.core.ble.di.polarSyncStateQualifier
+import dev.jtiisto.wellnesssync.core.common.DiagnosticLog
 import dev.jtiisto.wellnesssync.core.sync.SyncWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +32,7 @@ class PolarSyncService : Service() {
 
     private val syncServiceState: MutableStateFlow<PolarSyncServiceState> by inject(polarSyncStateQualifier)
     private val polarOfflineSync: PolarOfflineSync by inject()
+    private val diagnosticLog: DiagnosticLog by inject()
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var wakeLock: PowerManager.WakeLock? = null
@@ -60,6 +62,7 @@ class PolarSyncService : Service() {
     }
 
     private fun startSync(deviceId: String) {
+        diagnosticLog.log("polar", "PolarSyncService starting for $deviceId")
         val initialState = PolarSyncServiceState(
             isRunning = true,
             deviceId = deviceId,

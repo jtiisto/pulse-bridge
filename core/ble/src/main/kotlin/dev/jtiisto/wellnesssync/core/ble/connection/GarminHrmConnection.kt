@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
+import dev.jtiisto.wellnesssync.core.common.DiagnosticLog
 import dev.jtiisto.wellnesssync.core.ble.model.BleDevice
 import dev.jtiisto.wellnesssync.core.ble.model.ConnectionState
 import dev.jtiisto.wellnesssync.core.ble.model.HeartRateSample
@@ -33,6 +34,7 @@ class GarminHrmConnection(
     private val context: Context,
     private val address: String,
     private val scope: CoroutineScope,
+    private val diagnosticLog: DiagnosticLog,
     private val reconnectionStrategy: ReconnectionStrategy = ReconnectionStrategy(),
     private val connectTimeoutMs: Long = DEFAULT_CONNECT_TIMEOUT_MS,
 ) : BleDeviceConnection {
@@ -68,6 +70,7 @@ class GarminHrmConnection(
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            diagnosticLog.log("garmin", "onConnectionStateChange status=$status newState=$newState")
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     cancelConnectWatchdog()
@@ -97,6 +100,10 @@ class GarminHrmConnection(
             } else {
                 null
             }
+            diagnosticLog.log(
+                "garmin",
+                "onServicesDiscovered status=$status hrmCharacteristicFound=${hrmCharacteristic != null}",
+            )
             if (hrmCharacteristic == null) {
                 // Returning here would leave a silent CONNECTED-without-data
                 // stall; disconnecting routes through the retry path instead
@@ -107,10 +114,13 @@ class GarminHrmConnection(
             gatt.setCharacteristicNotification(hrmCharacteristic, true)
 
             val descriptor = hrmCharacteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG)
-            if (descriptor == null ||
-                gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) !=
-                BluetoothStatusCodes.SUCCESS
-            ) {
+            val writeResult = if (descriptor == null) {
+                null
+            } else {
+                gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+            }
+            if (writeResult != BluetoothStatusCodes.SUCCESS) {
+                diagnosticLog.log("garmin", "CCCD write failed (result=$writeResult) — disconnecting")
                 gatt.disconnect()
             }
         }
@@ -143,18 +153,21 @@ class GarminHrmConnection(
         gatt = null
 
         _connectionState.value = ConnectionState.CONNECTING
+        diagnosticLog.log("garmin", "connect() to $address")
 
         val newGatt = try {
             val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
             val device: BluetoothDevice = bluetoothManager.adapter.getRemoteDevice(address)
             device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         } catch (e: Exception) {
+            diagnosticLog.log("garmin", "connectGatt threw ${e.javaClass.simpleName}: ${e.message}")
             null
         }
 
         if (newGatt == null) {
             // Adapter off or invalid address — no callback will ever arrive,
             // so this must not be left sitting in CONNECTING
+            diagnosticLog.log("garmin", "connectGatt unavailable — scheduling retry")
             _connectionState.value = ConnectionState.DISCONNECTED
             attemptReconnect()
             return
@@ -166,6 +179,7 @@ class GarminHrmConnection(
 
     @SuppressLint("MissingPermission")
     override suspend fun disconnect() {
+        diagnosticLog.log("garmin", "disconnect() requested")
         reconnectJob?.cancel()
         reconnectJob = null
         cancelConnectWatchdog()
@@ -197,6 +211,7 @@ class GarminHrmConnection(
 
     private fun attemptReconnect() {
         if (!reconnectionStrategy.hasAttemptsRemaining) {
+            diagnosticLog.log("garmin", "giving up after ${reconnectionStrategy.currentAttempt} attempts")
             _connectionDetail.value =
                 "Unable to connect after ${reconnectionStrategy.currentAttempt} attempts"
             return
@@ -206,6 +221,10 @@ class GarminHrmConnection(
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
             val delayDuration = reconnectionStrategy.nextDelay()
+            diagnosticLog.log(
+                "garmin",
+                "attempt ${reconnectionStrategy.currentAttempt} failed — retrying in $delayDuration",
+            )
             _connectionDetail.value =
                 "Connect attempt ${reconnectionStrategy.currentAttempt} failed — retrying"
             delay(delayDuration)
@@ -221,6 +240,7 @@ class GarminHrmConnection(
         connectWatchdogJob = scope.launch {
             delay(connectTimeoutMs)
             if (_connectionState.value == ConnectionState.CONNECTING) {
+                diagnosticLog.log("garmin", "watchdog fired after ${connectTimeoutMs}ms — aborting connect")
                 gatt?.close()
                 gatt = null
                 _connectionState.value = ConnectionState.DISCONNECTED

@@ -20,6 +20,10 @@ android {
     kotlinOptions {
         jvmTarget = "21"
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {

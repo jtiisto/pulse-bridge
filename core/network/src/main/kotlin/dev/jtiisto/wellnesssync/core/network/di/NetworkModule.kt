@@ -1,6 +1,7 @@
 package dev.jtiisto.wellnesssync.core.network.di
 
 import dev.jtiisto.wellnesssync.core.network.AccelerometerApi
+import dev.jtiisto.wellnesssync.core.network.DiagnosticsApi
 import dev.jtiisto.wellnesssync.core.network.HttpClientProvider
 import dev.jtiisto.wellnesssync.core.network.IntervalApi
 import dev.jtiisto.wellnesssync.core.network.ServerConfig
@@ -15,6 +16,7 @@ val networkModule = module {
     single { HttpClientProvider.create(get()) }
     single { IntervalApi(get()) }
     single { AccelerometerApi(get()) }
+    single { DiagnosticsApi(get()) }
     single {
         ServerHealthMonitor(
             api = get(),
