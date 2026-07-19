@@ -43,6 +43,7 @@ class CaptureViewModel(
     init {
         observeServiceState()
         observeUnsyncedCount()
+        observeQuarantinedCount()
         observeSyncStatus()
         observeServerStatus()
         observePolarSyncState()
@@ -58,11 +59,14 @@ class CaptureViewModel(
             is CaptureEvent.StartScan -> startScan()
             is CaptureEvent.StopScan -> stopScan()
             is CaptureEvent.SyncNow -> syncNow()
+            is CaptureEvent.RetryQuarantined -> retryQuarantined()
             is CaptureEvent.RemoveKnownDevice -> removeKnownDevice(event.address)
             is CaptureEvent.DismissError -> _state.update { it.copy(error = null) }
             is CaptureEvent.PermissionsGranted -> {
                 _state.update { it.copy(permissionsGranted = true) }
                 repository.startPeriodicSync(getApplication())
+                // App-startup registration is a no-op before the first grant
+                repository.registerAllPolarScans()
             }
             // Polar events
             is CaptureEvent.AddPolarDevice -> addPolarDevice(event.deviceId, event.name)
@@ -74,14 +78,31 @@ class CaptureViewModel(
     }
 
     private fun startCapture(address: String, name: String?) {
+        if (!requirePermissions()) return
         // Stop ALL active scans — scanning during connectGatt causes flaky connections
         stopScan()
         stopPolarScan()
         repository.startCapture(getApplication(), address, name)
     }
 
+    // BLE actions without BLUETOOTH_SCAN/CONNECT fail confusingly deep in the
+    // stack (silent empty scans, failed service starts) — fail loudly here
+    private fun requirePermissions(): Boolean {
+        if (_state.value.permissionsGranted) return true
+        viewModelScope.launch {
+            _effects.send(CaptureEffect.ShowError("Bluetooth permissions are required"))
+        }
+        return false
+    }
+
     private fun syncNow() {
         repository.syncNow(getApplication())
+    }
+
+    private fun retryQuarantined() {
+        viewModelScope.launch {
+            repository.retryQuarantined(getApplication())
+        }
     }
 
     private fun stopCapture() {
@@ -89,6 +110,7 @@ class CaptureViewModel(
     }
 
     private fun startScan() {
+        if (!requirePermissions()) return
         if (scanJob?.isActive == true) return
 
         discoveredSet.clear()
@@ -159,6 +181,7 @@ class CaptureViewModel(
     }
 
     private fun startPolarScan() {
+        if (!requirePermissions()) return
         if (polarScanJob?.isActive == true) return
 
         discoveredPolarSet.clear()
@@ -254,6 +277,14 @@ class CaptureViewModel(
         viewModelScope.launch {
             repository.unsyncedCount.collect { count ->
                 _state.update { it.copy(unsyncedCount = count) }
+            }
+        }
+    }
+
+    private fun observeQuarantinedCount() {
+        viewModelScope.launch {
+            repository.quarantinedCount.collect { count ->
+                _state.update { it.copy(quarantinedCount = count) }
             }
         }
     }

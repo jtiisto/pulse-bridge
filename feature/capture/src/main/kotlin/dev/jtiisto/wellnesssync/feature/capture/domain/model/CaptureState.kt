@@ -16,6 +16,7 @@ data class CaptureState(
     val deviceName: String? = null,
     val intervalCount: Int = 0,
     val unsyncedCount: Int = 0,
+    val quarantinedCount: Int = 0,
     val lastSyncTime: Long? = null,
     val error: String? = null,
     val permissionsGranted: Boolean = false,

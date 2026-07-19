@@ -2,6 +2,7 @@ package dev.jtiisto.wellnesssync.core.ble.buffer
 
 import dev.jtiisto.wellnesssync.core.ble.model.HeartRateSample
 import dev.jtiisto.wellnesssync.core.ble.model.SensorPriority
+import dev.jtiisto.wellnesssync.core.common.DiagnosticLog
 import dev.jtiisto.wellnesssync.core.database.dao.IntervalDao
 import dev.jtiisto.wellnesssync.core.database.entity.IntervalEntity
 import io.mockk.coEvery
@@ -40,7 +41,12 @@ class IntervalBufferTest {
     private fun createBuffer(
         config: BufferConfig = BufferConfig(flushInterval = 10.seconds, maxBufferSize = 5),
         scope: TestScope = testScope,
-    ) = IntervalBuffer(dao, config, scope)
+    ) = IntervalBuffer(
+        intervalDao = dao,
+        diagnosticLog = DiagnosticLog(),
+        config = config,
+        scope = scope,
+    )
 
     private fun createSample(
         deviceId: String = "garmin-001",
@@ -135,12 +141,12 @@ class IntervalBufferTest {
     }
 
     @Test
-    fun `maps multiple RR intervals to multiple entities with offset timestamps`() = runTest {
+    fun `maps multiple RR intervals with the last beat anchored at receipt time`() = runTest {
         testScope = this
         val buffer = createBuffer()
 
         buffer.add(
-            createSample(timestampDevice = 1000L, rrIntervalsMs = listOf(800, 850, 820)),
+            createSample(timestampDevice = 10_000L, rrIntervalsMs = listOf(800, 850, 820)),
             sessionId = "s1",
         )
         buffer.flush()
@@ -148,20 +154,76 @@ class IntervalBufferTest {
         val entities = insertedBatches[0]
         assertEquals(3, entities.size)
 
-        // First entity at base timestamp
-        assertEquals(1000L, entities[0].timestampDevice)
+        // Beats precede the notification: each is receipt time minus the RRs after it
+        assertEquals(8_330L, entities[0].timestampDevice) // 10000 - (850 + 820)
         assertEquals(800, entities[0].rrIntervalMs)
         assertEquals(0, entities[0].rrSequenceIndex)
 
-        // Second entity offset by first RR
-        assertEquals(1800L, entities[1].timestampDevice) // 1000 + 800
+        assertEquals(9_180L, entities[1].timestampDevice) // 10000 - 820
         assertEquals(850, entities[1].rrIntervalMs)
         assertEquals(1, entities[1].rrSequenceIndex)
 
-        // Third entity offset by first + second RR
-        assertEquals(2650L, entities[2].timestampDevice) // 1000 + 800 + 850
+        assertEquals(10_000L, entities[2].timestampDevice) // last beat = receipt time
         assertEquals(820, entities[2].rrIntervalMs)
         assertEquals(2, entities[2].rrSequenceIndex)
+    }
+
+    @Test
+    fun `no generated timestamp exceeds the notification receipt time`() = runTest {
+        testScope = this
+        val buffer = createBuffer()
+
+        buffer.add(
+            createSample(timestampDevice = 10_000L, rrIntervalsMs = listOf(700, 750, 800, 720)),
+            sessionId = "s1",
+        )
+        // Trailing zero-RR sentinels are the collision case that used to leak
+        // into the future — they must also stay at or before receipt time
+        buffer.add(
+            createSample(timestampDevice = 20_000L, rrIntervalsMs = listOf(700, 750, 0, 0)),
+            sessionId = "s1",
+        )
+        buffer.flush()
+
+        val entities = insertedBatches[0]
+        assertTrue(entities.take(4).all { it.timestampDevice <= 10_000L })
+        assertTrue(entities.drop(4).all { it.timestampDevice <= 20_000L })
+    }
+
+    @Test
+    fun `add returns the number of rows generated`() = runTest {
+        testScope = this
+        val buffer = createBuffer()
+
+        assertEquals(2, buffer.add(createSample(rrIntervalsMs = listOf(800, 850)), sessionId = "s1"))
+        assertEquals(1, buffer.add(createSample(timestampDevice = 5000L, rrIntervalsMs = emptyList()), sessionId = "s1"))
+    }
+
+    @Test
+    fun `failed flush keeps the batch for a later retry`() = runTest {
+        testScope = this
+        var calls = 0
+        coEvery { dao.insertAll(any()) } coAnswers {
+            calls++
+            if (calls == 1) throw RuntimeException("database or disk is full")
+            insertedBatches.add(firstArg())
+        }
+        val buffer = createBuffer()
+
+        buffer.add(createSample(timestampDevice = 1000L, rrIntervalsMs = listOf(800, 850)), sessionId = "s1")
+        val firstFlush = buffer.flush()
+
+        // First flush failed — nothing stored, rows retained, failure reported
+        assertEquals(false, firstFlush)
+        assertEquals(0, insertedBatches.size)
+        assertEquals(2, buffer.size)
+
+        val secondFlush = buffer.flush()
+
+        assertEquals(true, secondFlush)
+        assertEquals(1, insertedBatches.size)
+        assertEquals(2, insertedBatches[0].size)
+        assertEquals(0, buffer.size)
     }
 
     @Test
@@ -221,8 +283,10 @@ class IntervalBufferTest {
         buffer.add(createSample(timestampDevice = 1000L, rrIntervalsMs = listOf(800, 0, 0)), sessionId = "s1")
         buffer.flush()
 
+        // Zero RRs collapse onto the anchor and are spread BACKWARD — the
+        // last beat stays at receipt time and nothing lands in the future
         val timestamps = insertedBatches[0].map { it.timestampDevice }
-        assertEquals(listOf(1000L, 1800L, 1801L), timestamps)
+        assertEquals(listOf(998L, 999L, 1000L), timestamps)
     }
 
     @Test

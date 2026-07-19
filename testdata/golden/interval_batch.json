@@ -1,0 +1,40 @@
+{
+  "intervals": [
+    {
+      "device_id": "GOLDEN:AA",
+      "timestamp_device": 1700000000000,
+      "timestamp_phone": 1700000000050,
+      "heart_rate_bpm": 72,
+      "rr_interval_ms": 833,
+      "rr_sequence_index": 0,
+      "is_gap": false,
+      "window_label": null,
+      "sensor_type": "garmin_hrm",
+      "session_id": "golden-session-1"
+    },
+    {
+      "device_id": "GOLDEN:AA",
+      "timestamp_device": 1700000000833,
+      "timestamp_phone": 1700000000900,
+      "heart_rate_bpm": 72,
+      "rr_interval_ms": 0,
+      "rr_sequence_index": 1,
+      "is_gap": false,
+      "window_label": null,
+      "sensor_type": "garmin_hrm",
+      "session_id": "golden-session-1"
+    },
+    {
+      "device_id": "GOLDEN:AA",
+      "timestamp_device": 1700000001600,
+      "timestamp_phone": 1700000001700,
+      "heart_rate_bpm": 68,
+      "rr_interval_ms": 900,
+      "rr_sequence_index": 0,
+      "is_gap": true,
+      "window_label": "w1",
+      "sensor_type": "polar_pvs",
+      "session_id": null
+    }
+  ]
+}

@@ -12,7 +12,10 @@ val databaseModule = module {
             WellnessSyncDatabase::class.java,
             "wellness_sync.db",
         )
-            .addMigrations(WellnessSyncDatabase.MIGRATION_1_2)
+            .addMigrations(
+                WellnessSyncDatabase.MIGRATION_1_2,
+                WellnessSyncDatabase.MIGRATION_2_3,
+            )
             .build()
     }
     single { get<WellnessSyncDatabase>().intervalDao() }

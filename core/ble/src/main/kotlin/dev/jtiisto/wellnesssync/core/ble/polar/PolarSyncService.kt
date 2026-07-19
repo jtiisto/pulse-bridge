@@ -32,6 +32,7 @@ class PolarSyncService : Service() {
 
     private val syncServiceState: MutableStateFlow<PolarSyncServiceState> by inject(polarSyncStateQualifier)
     private val polarOfflineSync: PolarOfflineSync by inject()
+    private val polarDeviceStore: PolarDeviceStore by inject()
     private val diagnosticLog: DiagnosticLog by inject()
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -85,6 +86,8 @@ class PolarSyncService : Service() {
                 val finalStatus = if (result.hasErrors && result.recordingsProcessed == 0) {
                     PolarSyncServiceState.Status.ERROR
                 } else {
+                    // Partial success counts: recordings were fetched and stored
+                    polarDeviceStore.updateLastSync(deviceId, System.currentTimeMillis())
                     PolarSyncServiceState.Status.COMPLETE
                 }
 

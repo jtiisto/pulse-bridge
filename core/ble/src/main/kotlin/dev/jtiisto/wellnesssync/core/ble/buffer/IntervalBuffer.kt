@@ -1,8 +1,10 @@
 package dev.jtiisto.wellnesssync.core.ble.buffer
 
 import dev.jtiisto.wellnesssync.core.ble.model.HeartRateSample
+import dev.jtiisto.wellnesssync.core.common.DiagnosticLog
 import dev.jtiisto.wellnesssync.core.database.dao.IntervalDao
 import dev.jtiisto.wellnesssync.core.database.entity.IntervalEntity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -12,6 +14,7 @@ import kotlinx.coroutines.sync.withLock
 
 class IntervalBuffer(
     private val intervalDao: IntervalDao,
+    private val diagnosticLog: DiagnosticLog,
     private val config: BufferConfig = BufferConfig(),
     private val scope: CoroutineScope,
 ) {
@@ -37,26 +40,40 @@ class IntervalBuffer(
         flushJob = null
     }
 
-    suspend fun add(sample: HeartRateSample, sessionId: String?) {
+    /** @return number of interval rows generated from this sample */
+    suspend fun add(sample: HeartRateSample, sessionId: String?): Int {
         mutex.withLock {
-            buffer.addAll(mapToEntities(sample, sessionId))
+            val entities = mapToEntities(sample, sessionId)
+            buffer.addAll(entities)
             if (buffer.size >= config.maxBufferSize) {
                 flushLocked()
             }
+            return entities.size
         }
     }
 
-    suspend fun flush() {
+    /** @return true when the buffer is fully persisted (or was already empty) */
+    suspend fun flush(): Boolean {
         mutex.withLock {
-            flushLocked()
+            return flushLocked()
         }
     }
 
-    private suspend fun flushLocked() {
-        if (buffer.isEmpty()) return
+    private suspend fun flushLocked(): Boolean {
+        if (buffer.isEmpty()) return true
         val batch = buffer.toList()
+        try {
+            intervalDao.insertAll(batch)
+        } catch (e: CancellationException) {
+            throw e // buffer kept; the singleton flushes on the next session
+        } catch (e: Exception) {
+            // Clearing before the insert is confirmed would lose the batch on
+            // disk pressure or transient DB errors — keep it and retry later
+            diagnosticLog.log("buffer", "flush FAILED, keeping ${batch.size} rows: ${e.message}")
+            return false
+        }
         buffer.clear()
-        intervalDao.insertAll(batch)
+        return true
     }
 
     private fun mapToEntities(
@@ -81,13 +98,25 @@ class IntervalBuffer(
             )
         }
 
-        return sample.rrIntervalsMs.mapIndexed { index, rrMs ->
-            // Offset each RR interval timestamp by cumulative preceding RR values
-            // to produce unique device timestamps per RR within the same notification
-            val cumulativeOffsetMs = sample.rrIntervalsMs.take(index).sum().toLong()
+        // Anchor the sequence so the LAST beat lands at receipt time — the
+        // beats happened BEFORE the notification arrived, never after. A
+        // future-drifting clock would collide with the next real notification.
+        val rrs = sample.rrIntervalsMs
+        val candidates = LongArray(rrs.size) { index ->
+            val remainingMs = rrs.subList(index + 1, rrs.size).sumOf { it.toLong() }
+            sample.timestampDevice - remainingMs
+        }
+        // Zero-RR sentinels collide at the anchor; spread them BACKWARD so
+        // uniqueness never pushes a beat past receipt time
+        for (i in candidates.size - 2 downTo 0) {
+            if (candidates[i] >= candidates[i + 1]) {
+                candidates[i] = candidates[i + 1] - 1
+            }
+        }
+        return rrs.mapIndexed { index, rrMs ->
             IntervalEntity(
                 deviceId = sample.deviceId,
-                timestampDevice = nextTimestamp(sample.deviceId, sample.timestampDevice + cumulativeOffsetMs),
+                timestampDevice = nextTimestamp(sample.deviceId, candidates[index]),
                 timestampPhone = phoneTimestamp,
                 heartRateBpm = sample.heartRateBpm,
                 rrIntervalMs = rrMs,

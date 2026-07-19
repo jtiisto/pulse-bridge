@@ -147,6 +147,23 @@ def test_gap_flag_stored():
     assert row[0] == 1
 
 
+def test_zero_rr_interval_stored():
+    # rr_interval_ms == 0 is a known sensor artifact; it must be accepted and
+    # persisted verbatim (filtering happens downstream, not at ingestion).
+    interval = make_interval(ts=100, rr=0)
+    resp = client.post("/api/v1/intervals/batch", json={"intervals": [interval]})
+    assert resp.status_code == 200
+    assert resp.json()["accepted"] == 1
+
+    from database import get_db
+    conn = get_db("production")
+    row = conn.execute(
+        "SELECT rr_interval_ms FROM intervals WHERE timestamp_device = 100"
+    ).fetchone()
+    conn.close()
+    assert row[0] == 0
+
+
 def make_accel_summary(device_id="AA:BB:CC:DD:EE:FF", window_start=1000):
     return {
         "device_id": device_id,
@@ -155,7 +172,7 @@ def make_accel_summary(device_id="AA:BB:CC:DD:EE:FF", window_start=1000):
         "magnitude_std": 0.15,
         "magnitude_max": 2.34,
         "sample_count": 250,
-        "sensor_type": "polar_verity",
+        "sensor_type": "polar_pvs",
         "session_id": "session-1",
     }
 
@@ -411,6 +428,32 @@ def test_diagnostics_upload_empty_entries():
     file_path.unlink()
 
 
+def test_diagnostics_upload_filenames_unique():
+    # Two consecutive uploads must not collide even within the same millisecond.
+    resp1 = client.post(
+        "/api/v1/diagnostics/upload",
+        json={"entries": [make_diagnostic_entry()]},
+    )
+    resp2 = client.post(
+        "/api/v1/diagnostics/upload",
+        json={"entries": [make_diagnostic_entry()]},
+    )
+    assert resp1.status_code == 200
+    assert resp2.status_code == 200
+
+    file1 = resp1.json()["file"]
+    file2 = resp2.json()["file"]
+    assert file1 != file2
+
+    path1 = config.DIAG_DIR / file1
+    path2 = config.DIAG_DIR / file2
+    assert path1.exists()
+    assert path2.exists()
+
+    path1.unlink()
+    path2.unlink()
+
+
 def test_diagnostics_upload_unknown_environment_rejected():
     resp = client.post(
         "/api/v1/diagnostics/upload",
@@ -425,3 +468,93 @@ def test_diagnostics_upload_unknown_environment_rejected():
 def cleanup():
     yield
     shutil.rmtree(_test_dir, ignore_errors=True)
+
+
+# --- Golden payload contract tests ---
+# The SAME files are asserted byte-for-byte against the Android client's
+# serializer (core/network GoldenPayloadTest); posting them here proves the
+# server accepts exactly what the app emits.
+
+GOLDEN_DIR = __import__("pathlib").Path(__file__).resolve().parent.parent / "testdata" / "golden"
+
+
+def load_golden(name):
+    import json
+
+    with open(GOLDEN_DIR / name) as f:
+        return json.load(f)
+
+
+def test_golden_interval_batch_accepted_and_stored():
+    payload = load_golden("interval_batch.json")
+    resp = client.post(
+        "/api/v1/intervals/batch",
+        json=payload,
+        headers={"X-Environment": "test"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["accepted"] == 3
+    assert data["duplicates"] == 0
+    assert data["total_received"] == 3
+
+    from database import get_db
+
+    conn = get_db("test")
+    try:
+        rows = conn.execute(
+            "SELECT rr_interval_ms, session_id, window_label FROM intervals "
+            "WHERE device_id = 'GOLDEN:AA' ORDER BY timestamp_device"
+        ).fetchall()
+        assert len(rows) == 3
+        assert rows[1][0] == 0  # zero-RR artifact preserved
+        assert rows[2][1] is None  # null session_id preserved
+        assert rows[2][2] == "w1"  # window_label preserved
+    finally:
+        conn.close()
+
+
+def test_golden_accelerometer_batch_accepted_and_stored():
+    payload = load_golden("accelerometer_batch.json")
+    resp = client.post(
+        "/api/v1/accelerometer/batch",
+        json=payload,
+        headers={"X-Environment": "test"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["accepted"] == 2
+    assert data["duplicates"] == 0
+
+    from database import get_db
+
+    conn = get_db("test")
+    try:
+        rows = conn.execute(
+            "SELECT sensor_type, session_id FROM accelerometer_summaries "
+            "WHERE device_id = 'GOLDEN:PVS' ORDER BY window_start"
+        ).fetchall()
+        assert len(rows) == 2
+        assert rows[0][0] == "polar_pvs"
+        assert rows[1][1] is None
+    finally:
+        conn.close()
+
+
+def test_golden_diagnostics_upload_accepted():
+    payload = load_golden("diagnostics_upload.json")
+    resp = client.post(
+        "/api/v1/diagnostics/upload",
+        json=payload,
+        headers={"X-Environment": "test"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["stored"] == 2
+
+    diag_file = config.DIAG_DIR / data["file"]
+    assert diag_file.exists()
+    with open(diag_file) as f:
+        lines = f.readlines()
+    assert len(lines) == 3  # device_info line + 2 entries
+    diag_file.unlink()

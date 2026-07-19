@@ -26,4 +26,7 @@ data class IntervalEntity(
     val sessionId: String? = null,
     val isSynced: Boolean = false,
     val syncedAt: Long? = null,
+    // Rows the server permanently rejected (4xx) — excluded from sync so one
+    // poison batch can't head-of-line block everything behind it
+    val isQuarantined: Boolean = false,
 )

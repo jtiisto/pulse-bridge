@@ -16,7 +16,7 @@ interface IntervalDao {
     @Query(
         """
         SELECT * FROM intervals
-        WHERE isSynced = 0
+        WHERE isSynced = 0 AND isQuarantined = 0
         ORDER BY timestampDevice ASC
         LIMIT :limit
         """
@@ -33,8 +33,24 @@ interface IntervalDao {
     )
     suspend fun markSynced(deviceId: String, timestamps: List<Long>, syncedAt: Long)
 
-    @Query("SELECT COUNT(*) FROM intervals WHERE isSynced = 0")
+    @Query("SELECT COUNT(*) FROM intervals WHERE isSynced = 0 AND isQuarantined = 0")
     fun getUnsyncedCount(): Flow<Int>
+
+    @Query(
+        """
+        UPDATE intervals
+        SET isQuarantined = 1
+        WHERE deviceId = :deviceId
+        AND timestampDevice IN (:timestamps)
+        """
+    )
+    suspend fun quarantine(deviceId: String, timestamps: List<Long>): Int
+
+    @Query("SELECT COUNT(*) FROM intervals WHERE isQuarantined = 1")
+    fun getQuarantinedCount(): Flow<Int>
+
+    @Query("UPDATE intervals SET isQuarantined = 0 WHERE isQuarantined = 1")
+    suspend fun clearQuarantine(): Int
 
     @Query(
         """
@@ -59,4 +75,10 @@ interface IntervalDao {
 
     @Query("DELETE FROM intervals WHERE isSynced = 1")
     suspend fun deleteSynced(): Int
+
+    @Query("SELECT COUNT(*) FROM intervals WHERE sessionId = :sessionId")
+    suspend fun countBySession(sessionId: String): Int
+
+    @Query("SELECT AVG(heartRateBpm) FROM intervals WHERE sessionId = :sessionId")
+    suspend fun averageHrBySession(sessionId: String): Double?
 }

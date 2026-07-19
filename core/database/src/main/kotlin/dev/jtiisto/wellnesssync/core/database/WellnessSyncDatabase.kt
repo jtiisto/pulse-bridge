@@ -20,8 +20,8 @@ import dev.jtiisto.wellnesssync.core.database.entity.SyncStatusEntity
         SyncStatusEntity::class,
         AccelerometerSummaryEntity::class,
     ],
-    version = 2,
-    exportSchema = false,
+    version = 3,
+    exportSchema = true,
 )
 abstract class WellnessSyncDatabase : RoomDatabase() {
     abstract fun intervalDao(): IntervalDao
@@ -54,6 +54,17 @@ abstract class WellnessSyncDatabase : RoomDatabase() {
                 )
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS index_accelerometer_summaries_sessionId ON accelerometer_summaries(sessionId)"
+                )
+            }
+        }
+
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE intervals ADD COLUMN isQuarantined INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    "ALTER TABLE accelerometer_summaries ADD COLUMN isQuarantined INTEGER NOT NULL DEFAULT 0"
                 )
             }
         }

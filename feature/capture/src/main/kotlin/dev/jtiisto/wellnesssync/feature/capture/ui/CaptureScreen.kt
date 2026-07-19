@@ -37,15 +37,20 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -84,23 +89,46 @@ fun CaptureScreen(
         }
     }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        if (permissions.values.all { it }) {
-            viewModel.onEvent(CaptureEvent.PermissionsGranted)
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        val permissions = buildList {
+    val requiredPermissions = remember {
+        buildList {
             add(Manifest.permission.BLUETOOTH_SCAN)
             add(Manifest.permission.BLUETOOTH_CONNECT)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 add(Manifest.permission.POST_NOTIFICATIONS)
             }
+        }.toTypedArray()
+    }
+    var bleDenied by remember { mutableStateOf(false) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        // Capture needs only the Bluetooth pair — a denied POST_NOTIFICATIONS
+        // just hides the foreground notification and must not block BLE
+        val bleGranted = permissions[Manifest.permission.BLUETOOTH_SCAN] == true &&
+            permissions[Manifest.permission.BLUETOOTH_CONNECT] == true
+        if (bleGranted) {
+            bleDenied = false
+            viewModel.onEvent(CaptureEvent.PermissionsGranted)
+        } else {
+            bleDenied = true
         }
-        permissionLauncher.launch(permissions.toTypedArray())
+    }
+
+    LaunchedEffect(Unit) {
+        permissionLauncher.launch(requiredPermissions)
+    }
+
+    LaunchedEffect(bleDenied) {
+        if (bleDenied) {
+            val result = snackbarHostState.showSnackbar(
+                message = "Bluetooth permissions are required for capture",
+                actionLabel = "Grant",
+                duration = SnackbarDuration.Long,
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                permissionLauncher.launch(requiredPermissions)
+            }
+        }
     }
 
     CaptureScreenContent(
@@ -204,8 +232,10 @@ private fun CaptureScreenContent(
             item {
                 SyncStatusCard(
                     unsyncedCount = state.unsyncedCount,
+                    quarantinedCount = state.quarantinedCount,
                     lastSyncTime = state.lastSyncTime,
                     onSyncNow = { onEvent(CaptureEvent.SyncNow) },
+                    onRetryQuarantined = { onEvent(CaptureEvent.RetryQuarantined) },
                 )
             }
 
@@ -483,8 +513,10 @@ private fun DiscoveredDeviceRow(
 @Composable
 private fun SyncStatusCard(
     unsyncedCount: Int,
+    quarantinedCount: Int,
     lastSyncTime: Long?,
     onSyncNow: () -> Unit,
+    onRetryQuarantined: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -515,6 +547,21 @@ private fun SyncStatusCard(
                     style = MaterialTheme.typography.bodyLarge,
                     color = if (unsyncedCount == 0) Success else Warning,
                 )
+            }
+
+            if (quarantinedCount > 0) {
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "$quarantinedCount rows rejected by server",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onRetryQuarantined) {
+                        Text("Retry", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
             }
 
             if (lastSyncTime != null) {

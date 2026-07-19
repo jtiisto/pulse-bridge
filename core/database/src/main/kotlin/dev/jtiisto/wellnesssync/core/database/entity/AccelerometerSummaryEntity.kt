@@ -22,4 +22,5 @@ data class AccelerometerSummaryEntity(
     val sessionId: String? = null,
     val isSynced: Boolean = false,
     val syncedAt: Long? = null,
+    val isQuarantined: Boolean = false,
 )

@@ -16,7 +16,7 @@ interface AccelerometerSummaryDao {
     @Query(
         """
         SELECT * FROM accelerometer_summaries
-        WHERE isSynced = 0
+        WHERE isSynced = 0 AND isQuarantined = 0
         ORDER BY windowStart ASC
         LIMIT :limit
         """
@@ -33,8 +33,24 @@ interface AccelerometerSummaryDao {
     )
     suspend fun markSynced(deviceId: String, windowStarts: List<Long>, syncedAt: Long)
 
-    @Query("SELECT COUNT(*) FROM accelerometer_summaries WHERE isSynced = 0")
+    @Query("SELECT COUNT(*) FROM accelerometer_summaries WHERE isSynced = 0 AND isQuarantined = 0")
     fun getUnsyncedCount(): Flow<Int>
+
+    @Query(
+        """
+        UPDATE accelerometer_summaries
+        SET isQuarantined = 1
+        WHERE deviceId = :deviceId
+        AND windowStart IN (:windowStarts)
+        """
+    )
+    suspend fun quarantine(deviceId: String, windowStarts: List<Long>): Int
+
+    @Query("SELECT COUNT(*) FROM accelerometer_summaries WHERE isQuarantined = 1")
+    fun getQuarantinedCount(): Flow<Int>
+
+    @Query("UPDATE accelerometer_summaries SET isQuarantined = 0 WHERE isQuarantined = 1")
+    suspend fun clearQuarantine(): Int
 
     @Query("SELECT COUNT(*) FROM accelerometer_summaries")
     suspend fun getTotalCount(): Int

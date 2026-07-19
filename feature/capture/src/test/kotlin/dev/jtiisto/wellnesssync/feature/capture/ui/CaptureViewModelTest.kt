@@ -13,6 +13,7 @@ import dev.jtiisto.wellnesssync.core.network.ServerHealthMonitor
 import dev.jtiisto.wellnesssync.core.network.ServerStatus
 import dev.jtiisto.wellnesssync.feature.capture.data.CaptureRepository
 import dev.jtiisto.wellnesssync.feature.capture.domain.model.CaptureEvent
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -54,6 +55,7 @@ class CaptureViewModelTest {
             every { serviceStateFlow } returns this@CaptureViewModelTest.serviceStateFlow
             every { polarSyncStateFlow } returns MutableStateFlow(PolarSyncServiceState())
             every { unsyncedCount } returns flowOf(0)
+            every { quarantinedCount } returns flowOf(0)
             every { syncStatus } returns flowOf(null)
             every { getKnownDevices() } returns emptyList()
             every { getPolarDevices() } returns emptyList()
@@ -148,6 +150,7 @@ class CaptureViewModelTest {
 
     @Test
     fun `start capture delegates to repository`() = runTest {
+        viewModel.onEvent(CaptureEvent.PermissionsGranted)
         viewModel.onEvent(CaptureEvent.StartCapture("AA:BB:CC:DD:EE:FF", "Garmin"))
         testDispatcher.scheduler.advanceUntilIdle()
 
@@ -155,9 +158,32 @@ class CaptureViewModelTest {
     }
 
     @Test
+    fun `BLE actions are blocked until permissions are granted`() = runTest {
+        viewModel.onEvent(CaptureEvent.StartScan)
+        viewModel.onEvent(CaptureEvent.StartPolarScan)
+        viewModel.onEvent(CaptureEvent.StartCapture("AA:BB:CC:DD:EE:FF", "Garmin"))
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        verify(exactly = 0) { repository.scanForDevices() }
+        verify(exactly = 0) { repository.startCapture(any(), any(), any()) }
+        assertFalse(viewModel.state.value.isScanning)
+        assertFalse(viewModel.state.value.isPolarScanning)
+    }
+
+    @Test
+    fun `granting permissions registers known Polar scans`() = runTest {
+        viewModel.onEvent(CaptureEvent.PermissionsGranted)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        verify { repository.registerAllPolarScans() }
+        verify { repository.startPeriodicSync(application) }
+    }
+
+    @Test
     fun `start capture stops an active polar scan`() = runTest {
         every { repository.scanForDevices() } returns MutableSharedFlow()
 
+        viewModel.onEvent(CaptureEvent.PermissionsGranted)
         viewModel.onEvent(CaptureEvent.StartPolarScan)
         testDispatcher.scheduler.advanceUntilIdle()
         assertTrue(viewModel.state.value.isPolarScanning)
@@ -173,6 +199,7 @@ class CaptureViewModelTest {
     fun `start capture stops an active device scan`() = runTest {
         every { repository.scanForDevices() } returns MutableSharedFlow()
 
+        viewModel.onEvent(CaptureEvent.PermissionsGranted)
         viewModel.onEvent(CaptureEvent.StartScan)
         testDispatcher.scheduler.advanceUntilIdle()
         assertTrue(viewModel.state.value.isScanning)
@@ -241,6 +268,29 @@ class CaptureViewModelTest {
 
         assertEquals(0, beatFlow.subscriptionCount.value)
         assertTrue(viewModel.state.value.chartPoints.isEmpty())
+    }
+
+    @Test
+    fun `quarantined count updates state`() = runTest {
+        val quarantinedFlow = MutableStateFlow(0)
+        every { repository.quarantinedCount } returns quarantinedFlow
+
+        val vm = CaptureViewModel(application, repository, serverHealthMonitor, clock = { clockMs })
+        vm.state.test {
+            awaitItem() // initial
+
+            quarantinedFlow.value = 7
+            val state = awaitItem()
+            assertEquals(7, state.quarantinedCount)
+        }
+    }
+
+    @Test
+    fun `retry quarantined delegates to repository`() = runTest {
+        viewModel.onEvent(CaptureEvent.RetryQuarantined)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        coVerify { repository.retryQuarantined(application) }
     }
 
     @Test

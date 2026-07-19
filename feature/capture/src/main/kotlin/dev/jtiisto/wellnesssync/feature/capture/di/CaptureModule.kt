@@ -13,6 +13,7 @@ val captureModule = module {
             serviceState = get(bleCaptureStateQualifier),
             polarSyncState = get(polarSyncStateQualifier),
             intervalDao = get(),
+            accelerometerSummaryDao = get(),
             syncStatusDao = get(),
             bleScanner = get(),
             knownDeviceStore = get(),

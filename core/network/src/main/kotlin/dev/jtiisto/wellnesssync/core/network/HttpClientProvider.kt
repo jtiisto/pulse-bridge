@@ -10,6 +10,16 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 import java.util.concurrent.TimeUnit
 
+/**
+ * Single source of truth for the wire format. The golden payload tests
+ * serialize with exactly this configuration — change it here and the
+ * contract tests will tell you what broke.
+ */
+val ApiJson: Json = Json {
+    ignoreUnknownKeys = true
+    encodeDefaults = true
+}
+
 object HttpClientProvider {
 
     /**
@@ -21,12 +31,7 @@ object HttpClientProvider {
             // callers to trip over deserialization failures of the error body
             expectSuccess = true
             install(ContentNegotiation) {
-                json(
-                    Json {
-                        ignoreUnknownKeys = true
-                        encodeDefaults = true
-                    }
-                )
+                json(ApiJson)
             }
             defaultRequest {
                 url(config.baseUrl)

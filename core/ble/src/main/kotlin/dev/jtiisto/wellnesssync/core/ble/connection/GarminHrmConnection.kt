@@ -37,6 +37,7 @@ class GarminHrmConnection(
     private val diagnosticLog: DiagnosticLog,
     private val reconnectionStrategy: ReconnectionStrategy = ReconnectionStrategy(),
     private val connectTimeoutMs: Long = DEFAULT_CONNECT_TIMEOUT_MS,
+    private val firstSampleTimeoutMs: Long = DEFAULT_FIRST_SAMPLE_TIMEOUT_MS,
 ) : BleDeviceConnection {
 
     companion object {
@@ -48,6 +49,10 @@ class GarminHrmConnection(
         // Android takes ~30 s to report a failed direct connect (and sometimes
         // never calls back at all) — abort sooner so retries stay responsive
         const val DEFAULT_CONNECT_TIMEOUT_MS = 15_000L
+
+        // A link is only proven healthy once real data flows: discovery, CCCD
+        // write, and notification delivery can all fail after CONNECTED
+        const val DEFAULT_FIRST_SAMPLE_TIMEOUT_MS = 10_000L
     }
 
     override val deviceId: String = address
@@ -55,8 +60,15 @@ class GarminHrmConnection(
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     override val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
-    private val _heartRateData = MutableSharedFlow<HeartRateSample>(extraBufferCapacity = 64)
+    // ~17 min of beats at 1 Hz — a DB stall that outlasts this has bigger
+    // problems, and any overflow is gap-marked in the data plus counted below
+    private val _heartRateData = MutableSharedFlow<HeartRateSample>(extraBufferCapacity = 1024)
     override val heartRateData: Flow<HeartRateSample> = _heartRateData.asSharedFlow()
+
+    private val droppedSamples = java.util.concurrent.atomic.AtomicInteger(0)
+
+    @Volatile
+    private var dropGapPending = false
 
     /** Human-readable connect progress/failure detail for the UI; null when healthy. */
     private val _connectionDetail = MutableStateFlow<String?>(null)
@@ -66,6 +78,10 @@ class GarminHrmConnection(
     private val lastSampleTimestamp = AtomicLong(0L)
     private var reconnectJob: Job? = null
     private var connectWatchdogJob: Job? = null
+    private var firstSampleWatchdogJob: Job? = null
+
+    @Volatile
+    private var awaitingFirstSample = false
 
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
@@ -75,8 +91,10 @@ class GarminHrmConnection(
                 BluetoothProfile.STATE_CONNECTED -> {
                     cancelConnectWatchdog()
                     _connectionState.value = ConnectionState.CONNECTED
-                    _connectionDetail.value = null
-                    reconnectionStrategy.reset()
+                    // Retry budget resets on the FIRST SAMPLE, not here —
+                    // resetting on a bare link would let repeated post-connect
+                    // failures defeat the attempt bound
+                    startFirstSampleWatchdog()
                     if (!gatt.discoverServices()) {
                         // Stack busy — a CONNECTED link with no services never
                         // produces data, so force the disconnect/retry path
@@ -85,6 +103,7 @@ class GarminHrmConnection(
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     cancelConnectWatchdog()
+                    cancelFirstSampleWatchdog()
                     _connectionState.value = ConnectionState.DISCONNECTED
                     gatt.close()
                     this@GarminHrmConnection.gatt = null
@@ -111,7 +130,11 @@ class GarminHrmConnection(
                 return
             }
 
-            gatt.setCharacteristicNotification(hrmCharacteristic, true)
+            if (!gatt.setCharacteristicNotification(hrmCharacteristic, true)) {
+                diagnosticLog.log("garmin", "setCharacteristicNotification failed — disconnecting")
+                gatt.disconnect()
+                return
+            }
 
             val descriptor = hrmCharacteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG)
             val writeResult = if (descriptor == null) {
@@ -122,6 +145,22 @@ class GarminHrmConnection(
             if (writeResult != BluetoothStatusCodes.SUCCESS) {
                 diagnosticLog.log("garmin", "CCCD write failed (result=$writeResult) — disconnecting")
                 gatt.disconnect()
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onDescriptorWrite(
+            gatt: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            status: Int,
+        ) {
+            if (descriptor.uuid == CLIENT_CHARACTERISTIC_CONFIG) {
+                diagnosticLog.log("garmin", "onDescriptorWrite status=$status")
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    // Notifications never actually enabled — without this check
+                    // the link would sit "connected" with no data forever
+                    gatt.disconnect()
+                }
             }
         }
 
@@ -183,6 +222,7 @@ class GarminHrmConnection(
         reconnectJob?.cancel()
         reconnectJob = null
         cancelConnectWatchdog()
+        cancelFirstSampleWatchdog()
         reconnectionStrategy.reset()
         _connectionState.value = ConnectionState.DISCONNECTED
         _connectionDetail.value = null
@@ -197,6 +237,7 @@ class GarminHrmConnection(
         val previous = lastSampleTimestamp.getAndSet(now)
         val isGap = previous > 0 && (now - previous) > GAP_THRESHOLD_MS
 
+        val gapFromDrop = dropGapPending
         val sample = HeartRateSample(
             deviceId = address,
             timestampDevice = now,
@@ -204,9 +245,30 @@ class GarminHrmConnection(
             rrIntervalsMs = parsed.rrIntervalsMs,
             sensorPriority = SensorPriority.GARMIN_ECG,
             sensorType = BleDevice.SENSOR_TYPE_GARMIN_HRM,
-            isGapBefore = isGap,
+            isGapBefore = isGap || gapFromDrop,
         )
-        _heartRateData.tryEmit(sample)
+
+        if (awaitingFirstSample) {
+            awaitingFirstSample = false
+            cancelFirstSampleWatchdog()
+            // Data flowing is the real definition of a healthy link
+            reconnectionStrategy.reset()
+            _connectionDetail.value = null
+            diagnosticLog.log("garmin", "first sample received — link healthy")
+        }
+
+        if (_heartRateData.tryEmit(sample)) {
+            if (gapFromDrop) dropGapPending = false
+        } else {
+            // The measurement is lost — record it in the DATA (gap marker on
+            // the next stored sample) and in a cumulative counter, not just logs
+            dropGapPending = true
+            val total = droppedSamples.incrementAndGet()
+            diagnosticLog.log(
+                "garmin",
+                "sample DROPPED (total=$total) — flow buffer full; next stored sample carries a gap marker",
+            )
+        }
     }
 
     private fun attemptReconnect() {
@@ -252,5 +314,27 @@ class GarminHrmConnection(
     private fun cancelConnectWatchdog() {
         connectWatchdogJob?.cancel()
         connectWatchdogJob = null
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startFirstSampleWatchdog() {
+        awaitingFirstSample = true
+        firstSampleWatchdogJob?.cancel()
+        firstSampleWatchdogJob = scope.launch {
+            delay(firstSampleTimeoutMs)
+            if (awaitingFirstSample && _connectionState.value == ConnectionState.CONNECTED) {
+                diagnosticLog.log(
+                    "garmin",
+                    "no data ${firstSampleTimeoutMs}ms after connect — disconnecting to retry",
+                )
+                gatt?.disconnect()
+            }
+        }
+    }
+
+    private fun cancelFirstSampleWatchdog() {
+        awaitingFirstSample = false
+        firstSampleWatchdogJob?.cancel()
+        firstSampleWatchdogJob = null
     }
 }

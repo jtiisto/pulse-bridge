@@ -32,6 +32,16 @@ interface DeviceSessionDao {
     @Query(
         """
         SELECT * FROM device_sessions
+        WHERE endTime IS NULL
+        ORDER BY startTime DESC
+        LIMIT 1
+        """
+    )
+    suspend fun getMostRecentActiveSession(): DeviceSessionEntity?
+
+    @Query(
+        """
+        SELECT * FROM device_sessions
         ORDER BY startTime DESC
         LIMIT :limit
         """

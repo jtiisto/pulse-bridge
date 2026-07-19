@@ -1,5 +1,6 @@
 import json
 import time
+import uuid
 
 from fastapi import FastAPI, Header, HTTPException
 
@@ -120,7 +121,7 @@ def diagnostics_upload(
 ) -> DiagnosticUploadResponse:
     env = resolve_environment(x_environment)
     DIAG_DIR.mkdir(parents=True, exist_ok=True)
-    file_name = f"diag_{env}_{int(time.time() * 1000)}.jsonl"
+    file_name = f"diag_{env}_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}.jsonl"
     file_path = DIAG_DIR / file_name
 
     with file_path.open("w") as f:

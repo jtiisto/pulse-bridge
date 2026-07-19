@@ -1,0 +1,15 @@
+{
+  "device_info": "Golden Test Device / Android 15",
+  "entries": [
+    {
+      "timestamp_ms": 1700000000000,
+      "tag": "garmin",
+      "message": "onConnectionStateChange status=133 newState=0"
+    },
+    {
+      "timestamp_ms": 1700000000500,
+      "tag": "scan",
+      "message": "found HRM-Pro:123456 AA:BB:CC:DD:EE:FF rssi=-60 hrmService=true"
+    }
+  ]
+}

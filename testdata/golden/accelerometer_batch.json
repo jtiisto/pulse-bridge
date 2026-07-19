@@ -1,0 +1,24 @@
+{
+  "summaries": [
+    {
+      "device_id": "GOLDEN:PVS",
+      "window_start": 1700000000000,
+      "magnitude_mean": 1.012,
+      "magnitude_std": 0.05,
+      "magnitude_max": 1.4,
+      "sample_count": 120,
+      "sensor_type": "polar_pvs",
+      "session_id": "golden-rec-1"
+    },
+    {
+      "device_id": "GOLDEN:PVS",
+      "window_start": 1700000060000,
+      "magnitude_mean": 0.98,
+      "magnitude_std": 0.02,
+      "magnitude_max": 1.1,
+      "sample_count": 118,
+      "sensor_type": "polar_pvs",
+      "session_id": null
+    }
+  ]
+}

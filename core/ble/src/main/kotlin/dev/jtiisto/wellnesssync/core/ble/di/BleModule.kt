@@ -35,6 +35,7 @@ val bleModule = module {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         IntervalBuffer(
             intervalDao = get(),
+            diagnosticLog = get(),
             scope = scope,
         )
     }

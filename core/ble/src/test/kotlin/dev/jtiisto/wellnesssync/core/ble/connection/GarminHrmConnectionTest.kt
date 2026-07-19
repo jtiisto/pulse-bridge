@@ -4,6 +4,9 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
@@ -126,6 +129,110 @@ class GarminHrmConnectionTest {
         verify(exactly = 0) { gattMock.close() }
 
         conn.disconnect()
+    }
+
+    private fun stubHrmService(
+        notificationEnableSucceeds: Boolean = true,
+        cccdWriteResult: Int = 0, // BluetoothStatusCodes.SUCCESS
+    ): BluetoothGattDescriptor {
+        val descriptor = mockk<BluetoothGattDescriptor>(relaxed = true)
+        every { descriptor.uuid } returns GarminHrmConnection.CLIENT_CHARACTERISTIC_CONFIG
+        val characteristic = mockk<BluetoothGattCharacteristic>(relaxed = true)
+        every { characteristic.getDescriptor(any()) } returns descriptor
+        val service = mockk<BluetoothGattService>()
+        every { service.getCharacteristic(any()) } returns characteristic
+        every { gattMock.getService(any()) } returns service
+        every { gattMock.discoverServices() } returns true
+        every { gattMock.setCharacteristicNotification(any(), any()) } returns notificationEnableSucceeds
+        every { gattMock.writeDescriptor(any(), any()) } returns cccdWriteResult
+        return descriptor
+    }
+
+    @Test
+    fun `failed CCCD write forces a disconnect instead of a silent stall`() = runTest {
+        stubHrmService(cccdWriteResult = 201) // any non-SUCCESS status
+        val conn = connection(mockContext(gattMock), maxAttempts = 1)
+
+        conn.connect()
+        callbackSlot.captured.onConnectionStateChange(
+            gattMock, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED,
+        )
+        callbackSlot.captured.onServicesDiscovered(gattMock, BluetoothGatt.GATT_SUCCESS)
+
+        verify { gattMock.disconnect() }
+
+        conn.disconnect()
+    }
+
+    @Test
+    fun `failed notification enable forces a disconnect`() = runTest {
+        stubHrmService(notificationEnableSucceeds = false)
+        val conn = connection(mockContext(gattMock), maxAttempts = 1)
+
+        conn.connect()
+        callbackSlot.captured.onConnectionStateChange(
+            gattMock, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED,
+        )
+        callbackSlot.captured.onServicesDiscovered(gattMock, BluetoothGatt.GATT_SUCCESS)
+
+        verify { gattMock.disconnect() }
+        verify(exactly = 0) { gattMock.writeDescriptor(any(), any()) }
+
+        conn.disconnect()
+    }
+
+    @Test
+    fun `failed descriptor write completion forces a disconnect`() = runTest {
+        val descriptor = stubHrmService()
+        val conn = connection(mockContext(gattMock), maxAttempts = 1)
+
+        conn.connect()
+        callbackSlot.captured.onConnectionStateChange(
+            gattMock, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED,
+        )
+        callbackSlot.captured.onDescriptorWrite(gattMock, descriptor, BluetoothGatt.GATT_FAILURE)
+
+        verify { gattMock.disconnect() }
+
+        conn.disconnect()
+    }
+
+    @Test
+    fun `no data after connect triggers a disconnect so the retry path runs`() = runTest {
+        every { gattMock.discoverServices() } returns true
+        val conn = connection(mockContext(gattMock), maxAttempts = 1)
+
+        conn.connect()
+        callbackSlot.captured.onConnectionStateChange(
+            gattMock, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED,
+        )
+
+        advanceTimeBy(GarminHrmConnection.DEFAULT_FIRST_SAMPLE_TIMEOUT_MS + 1)
+
+        verify { gattMock.disconnect() }
+
+        conn.disconnect()
+    }
+
+    @Test
+    fun `retry budget is not reset by a bare connection without data`() = runTest {
+        every { gattMock.discoverServices() } returns true
+        val conn = connection(mockContext(gattMock), maxAttempts = 1)
+
+        conn.connect()
+        // Link comes up but never delivers data, then drops — the attempt
+        // budget must not be refilled by the bare CONNECTED transition
+        callbackSlot.captured.onConnectionStateChange(
+            gattMock, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED,
+        )
+        callbackSlot.captured.onConnectionStateChange(
+            gattMock, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_DISCONNECTED,
+        )
+
+        advanceUntilIdle()
+
+        assertEquals(ConnectionState.DISCONNECTED, conn.connectionState.value)
+        assertTrue(conn.connectionDetail.value!!.contains("Unable to connect after 1"))
     }
 
     @Test

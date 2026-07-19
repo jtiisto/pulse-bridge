@@ -14,17 +14,20 @@ import dev.jtiisto.wellnesssync.core.ble.scanner.BleScanner
 import dev.jtiisto.wellnesssync.core.ble.scanner.DiscoveredDevice
 import dev.jtiisto.wellnesssync.core.ble.service.BleCaptureService
 import dev.jtiisto.wellnesssync.core.ble.service.BleCaptureServiceState
+import dev.jtiisto.wellnesssync.core.database.dao.AccelerometerSummaryDao
 import dev.jtiisto.wellnesssync.core.database.dao.IntervalDao
 import dev.jtiisto.wellnesssync.core.database.dao.SyncStatusDao
 import dev.jtiisto.wellnesssync.core.database.entity.SyncStatusEntity
 import dev.jtiisto.wellnesssync.core.sync.SyncWorker
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 
 class CaptureRepository(
     private val serviceState: MutableStateFlow<BleCaptureServiceState>,
     private val polarSyncState: MutableStateFlow<PolarSyncServiceState>,
     private val intervalDao: IntervalDao,
+    private val accelerometerSummaryDao: AccelerometerSummaryDao,
     private val syncStatusDao: SyncStatusDao,
     private val bleScanner: BleScanner,
     private val knownDeviceStore: KnownDeviceStore,
@@ -40,7 +43,26 @@ class CaptureRepository(
     // service; the UI sees exactly the beats being recorded
     val beatStream: Flow<HeartRateSample> = multiplexer.authoritativeStream
 
-    val unsyncedCount: Flow<Int> = intervalDao.getUnsyncedCount()
+    // "All synced" must cover BOTH data streams — intervals alone can read
+    // green while Polar accelerometer summaries are still local-only
+    val unsyncedCount: Flow<Int> = combine(
+        intervalDao.getUnsyncedCount(),
+        accelerometerSummaryDao.getUnsyncedCount(),
+    ) { intervals, summaries -> intervals + summaries }
+
+    // Quarantined rows are excluded from the pending count, so they need
+    // their own visible number — otherwise the UI reads "All synced" while
+    // server-rejected data sits local-only
+    val quarantinedCount: Flow<Int> = combine(
+        intervalDao.getQuarantinedCount(),
+        accelerometerSummaryDao.getQuarantinedCount(),
+    ) { intervals, summaries -> intervals + summaries }
+
+    suspend fun retryQuarantined(context: Context) {
+        intervalDao.clearQuarantine()
+        accelerometerSummaryDao.clearQuarantine()
+        SyncWorker.enqueueSyncNow(context)
+    }
 
     val syncStatus: Flow<SyncStatusEntity?> = syncStatusDao.observe()
 
@@ -86,5 +108,11 @@ class CaptureRepository(
     fun syncPolarNow(context: Context, deviceId: String) {
         val intent = PolarSyncService.startIntent(context, deviceId)
         context.startForegroundService(intent)
+    }
+
+    // Called once Bluetooth permissions are granted — app-startup registration
+    // fails silently on a first launch that hasn't been granted them yet
+    fun registerAllPolarScans() {
+        polarDeviceDetector.registerAllKnownDevices(polarDeviceStore.getDeviceIds())
     }
 }

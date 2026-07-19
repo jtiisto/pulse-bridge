@@ -1,10 +1,12 @@
 package dev.jtiisto.wellnesssync.core.sync
 
+import dev.jtiisto.wellnesssync.core.common.DiagnosticLog
 import dev.jtiisto.wellnesssync.core.common.EnvironmentStore
 import dev.jtiisto.wellnesssync.core.common.SyncEnvironment
 import dev.jtiisto.wellnesssync.core.database.dao.AccelerometerSummaryDao
 import dev.jtiisto.wellnesssync.core.database.dao.IntervalDao
 import dev.jtiisto.wellnesssync.core.database.dao.SyncStatusDao
+import dev.jtiisto.wellnesssync.core.database.entity.AccelerometerSummaryEntity
 import dev.jtiisto.wellnesssync.core.database.entity.IntervalEntity
 import dev.jtiisto.wellnesssync.core.database.entity.SyncStatusEntity
 import dev.jtiisto.wellnesssync.core.network.AccelerometerApi
@@ -12,6 +14,9 @@ import dev.jtiisto.wellnesssync.core.network.IntervalApi
 import dev.jtiisto.wellnesssync.core.network.dto.HealthResponseDto
 import dev.jtiisto.wellnesssync.core.network.dto.IntervalBatchDto
 import dev.jtiisto.wellnesssync.core.network.dto.SyncResponseDto
+import io.ktor.client.plugins.ClientRequestException
+import io.ktor.client.statement.HttpResponse
+import io.ktor.http.HttpStatusCode
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -67,8 +72,28 @@ class SyncManagerTest {
             intervalApi = intervalApi,
             accApi = accApi,
             environmentStore = environmentStore,
+            diagnosticLog = DiagnosticLog(),
             config = SyncConfig(batchSize = 100),
         )
+    }
+
+    private fun makeAccEntity(deviceId: String = "1A2B3C4D", windowStart: Long) =
+        AccelerometerSummaryEntity(
+            deviceId = deviceId,
+            windowStart = windowStart,
+            magnitudeMean = 1.0,
+            magnitudeStd = 0.1,
+            magnitudeMax = 1.4,
+            sampleCount = 120,
+            sensorType = "polar_pvs",
+            sessionId = "rec-1",
+        )
+
+    private fun clientError(status: HttpStatusCode): ClientRequestException {
+        val response = mockk<HttpResponse>(relaxed = true) {
+            every { this@mockk.status } returns status
+        }
+        return ClientRequestException(response, "rejected")
     }
 
     @Test
@@ -171,6 +196,194 @@ class SyncManagerTest {
                 it.lastError == "Connection refused"
             })
         }
+    }
+
+    @Test
+    fun `4xx batch is quarantined and later batches still sync`() = runTest {
+        val poison = listOf(makeEntity(ts = 1000))
+        val good = listOf(makeEntity(ts = 2000))
+        coEvery { intervalDao.getUnsyncedIntervals(any()) } returns poison andThen good andThen emptyList()
+        coEvery { intervalDao.quarantine(any(), any()) } returns 1
+        coEvery { intervalApi.syncBatch(any(), any()) } throws
+            clientError(HttpStatusCode.UnprocessableEntity) andThen
+            SyncResponseDto(accepted = 1, duplicates = 0, totalReceived = 1)
+
+        val result = syncManager.sync()
+
+        assertEquals(1, result.quarantined)
+        assertEquals(1, result.totalSent)
+        assertEquals(1, result.totalAccepted)
+        coVerify { intervalDao.quarantine("AA:BB", listOf(1000L)) }
+        coVerify { intervalDao.markSynced("AA:BB", listOf(2000L), any()) }
+    }
+
+    @Test
+    fun `exhausted quarantine budget aborts instead of quarantining the backlog`() = runTest {
+        val guarded = SyncManager(
+            intervalDao = intervalDao,
+            accDao = accDao,
+            syncStatusDao = syncStatusDao,
+            intervalApi = intervalApi,
+            accApi = accApi,
+            environmentStore = environmentStore,
+            diagnosticLog = DiagnosticLog(),
+            config = SyncConfig(batchSize = 100, maxQuarantinePerRun = 1),
+        )
+        val batch1 = listOf(makeEntity(ts = 1000))
+        val batch2 = listOf(makeEntity(ts = 2000))
+        coEvery { intervalDao.getUnsyncedIntervals(any()) } returns batch1 andThen batch2 andThen emptyList()
+        coEvery { intervalDao.quarantine(any(), any()) } returns 1
+        coEvery { intervalApi.syncBatch(any(), any()) } throws
+            clientError(HttpStatusCode.UnprocessableEntity) andThenThrows
+            clientError(HttpStatusCode.UnprocessableEntity)
+
+        var thrown: ClientRequestException? = null
+        try {
+            guarded.sync()
+        } catch (e: ClientRequestException) {
+            thrown = e
+        }
+
+        assertEquals(true, thrown != null)
+        // Budget of 1 consumed by the first row; the second rejection aborts
+        coVerify(exactly = 1) { intervalDao.quarantine(any(), any()) }
+        coVerify { intervalDao.quarantine("AA:BB", listOf(1000L)) }
+    }
+
+    @Test
+    fun `non-validation 4xx aborts immediately without touching data`() = runTest {
+        val entities = listOf(makeEntity(ts = 1000), makeEntity(ts = 2000))
+        coEvery { intervalDao.getUnsyncedIntervals(any()) } returns entities andThen emptyList()
+        // 404: endpoint problem, not a row problem — must not bisect or quarantine
+        coEvery { intervalApi.syncBatch(any(), any()) } throws clientError(HttpStatusCode.NotFound)
+
+        var thrown: ClientRequestException? = null
+        try {
+            syncManager.sync()
+        } catch (e: ClientRequestException) {
+            thrown = e
+        }
+
+        assertEquals(true, thrown != null)
+        coVerify(exactly = 1) { intervalApi.syncBatch(any(), any()) }
+        coVerify(exactly = 0) { intervalDao.quarantine(any(), any()) }
+    }
+
+    @Test
+    fun `systemic 422 with no successes trips the circuit breaker`() = runTest {
+        val entities = (1..8).map { makeEntity(ts = it.toLong()) }
+        coEvery { intervalDao.getUnsyncedIntervals(any()) } returns entities andThen emptyList()
+        coEvery { intervalDao.quarantine(any(), any()) } returns 1
+        // EVERY request 422s — contract drift, nothing is row-specific
+        coEvery { intervalApi.syncBatch(any(), any()) } throws
+            clientError(HttpStatusCode.UnprocessableEntity)
+
+        var thrown: ClientRequestException? = null
+        try {
+            syncManager.sync()
+        } catch (e: ClientRequestException) {
+            thrown = e
+        }
+
+        assertEquals(true, thrown != null)
+        // Only maxQuarantineWithoutSuccess (3) rows sacrificed before aborting
+        coVerify(exactly = 3) { intervalDao.quarantine(any(), any()) }
+    }
+
+    @Test
+    fun `quarantine budget is shared across interval and accelerometer streams`() = runTest {
+        val shared = SyncManager(
+            intervalDao = intervalDao,
+            accDao = accDao,
+            syncStatusDao = syncStatusDao,
+            intervalApi = intervalApi,
+            accApi = accApi,
+            environmentStore = environmentStore,
+            diagnosticLog = DiagnosticLog(),
+            config = SyncConfig(batchSize = 100, maxQuarantinePerRun = 1),
+        )
+        val good = listOf(makeEntity(ts = 100))
+        val poison = listOf(makeEntity(ts = 200))
+        coEvery { intervalDao.getUnsyncedIntervals(any()) } returns good andThen poison andThen emptyList()
+        coEvery { intervalDao.quarantine(any(), any()) } returns 1
+        coEvery { intervalApi.syncBatch(any(), any()) } returns
+            SyncResponseDto(accepted = 1, duplicates = 0, totalReceived = 1) andThenThrows
+            clientError(HttpStatusCode.UnprocessableEntity)
+        coEvery { accDao.getUnsyncedSummaries(any()) } returns listOf(makeAccEntity(windowStart = 60_000L))
+        coEvery { accApi.syncBatch(any(), any()) } throws clientError(HttpStatusCode.UnprocessableEntity)
+
+        var thrown: ClientRequestException? = null
+        try {
+            shared.sync()
+        } catch (e: ClientRequestException) {
+            thrown = e
+        }
+
+        assertEquals(true, thrown != null)
+        // The single budget slot went to the interval row; the accelerometer
+        // rejection found the shared budget empty and aborted
+        coVerify(exactly = 1) { intervalDao.quarantine("AA:BB", listOf(200L)) }
+        coVerify(exactly = 0) { accDao.quarantine(any(), any()) }
+    }
+
+    @Test
+    fun `bisect quarantines only the poison row and syncs its batch-mates`() = runTest {
+        val entities = listOf(makeEntity(ts = 665), makeEntity(ts = 666), makeEntity(ts = 667))
+        coEvery { intervalDao.getUnsyncedIntervals(any()) } returns entities andThen emptyList()
+        coEvery { intervalDao.quarantine(any(), any()) } returns 1
+        // Server rejects any request containing the poison row (ts=666)
+        coEvery { intervalApi.syncBatch(any(), any()) } coAnswers {
+            val batch = firstArg<IntervalBatchDto>()
+            if (batch.intervals.any { it.timestampDevice == 666L }) {
+                throw clientError(HttpStatusCode.UnprocessableEntity)
+            }
+            SyncResponseDto(
+                accepted = batch.intervals.size,
+                duplicates = 0,
+                totalReceived = batch.intervals.size,
+            )
+        }
+
+        val result = syncManager.sync()
+
+        assertEquals(1, result.quarantined)
+        assertEquals(2, result.totalAccepted)
+        coVerify(exactly = 1) { intervalDao.quarantine("AA:BB", listOf(666L)) }
+        coVerify { intervalDao.markSynced("AA:BB", listOf(665L), any()) }
+        coVerify { intervalDao.markSynced("AA:BB", listOf(667L), any()) }
+    }
+
+    @Test
+    fun `accelerometer summaries are synced and marked`() = runTest {
+        coEvery { intervalDao.getUnsyncedIntervals(any()) } returns emptyList()
+        val summaries = listOf(makeAccEntity(windowStart = 60_000L))
+        coEvery { accDao.getUnsyncedSummaries(any()) } returns summaries andThen emptyList()
+        coEvery { accApi.syncBatch(any(), any()) } returns SyncResponseDto(
+            accepted = 1, duplicates = 0, totalReceived = 1,
+        )
+
+        val result = syncManager.sync()
+
+        assertEquals(1, result.accSent)
+        assertEquals(1, result.accAccepted)
+        assertEquals(1, result.accBatches)
+        coVerify { accDao.markSynced("1A2B3C4D", listOf(60_000L), any()) }
+    }
+
+    @Test
+    fun `422 accelerometer row is quarantined without blocking`() = runTest {
+        coEvery { intervalDao.getUnsyncedIntervals(any()) } returns emptyList()
+        val poison = listOf(makeAccEntity(windowStart = 60_000L))
+        coEvery { accDao.getUnsyncedSummaries(any()) } returns poison andThen emptyList()
+        coEvery { accDao.quarantine(any(), any()) } returns 1
+        coEvery { accApi.syncBatch(any(), any()) } throws
+            clientError(HttpStatusCode.UnprocessableEntity)
+
+        val result = syncManager.sync()
+
+        assertEquals(1, result.accQuarantined)
+        assertEquals(0, result.accSent)
+        coVerify { accDao.quarantine("1A2B3C4D", listOf(60_000L)) }
     }
 
     @Test

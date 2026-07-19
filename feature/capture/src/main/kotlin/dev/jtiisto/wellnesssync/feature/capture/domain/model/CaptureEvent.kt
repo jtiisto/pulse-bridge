@@ -6,6 +6,7 @@ sealed interface CaptureEvent {
     data object StartScan : CaptureEvent
     data object StopScan : CaptureEvent
     data object SyncNow : CaptureEvent
+    data object RetryQuarantined : CaptureEvent
     data class RemoveKnownDevice(val address: String) : CaptureEvent
     data object DismissError : CaptureEvent
     data object PermissionsGranted : CaptureEvent
