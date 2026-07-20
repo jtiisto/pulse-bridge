@@ -1,3 +1,8 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 pydantic>=2.10.0
+
+# Analysis module (python -m analysis). numpy is required; matplotlib is
+# optional at runtime (PNG charts) but listed for a complete environment.
+numpy>=2.0.0
+matplotlib>=3.8.0

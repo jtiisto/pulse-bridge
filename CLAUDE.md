@@ -62,7 +62,71 @@ Base package: `dev.jtiisto.wellnesssync`
 - `POST /api/v1/accelerometer/batch` — idempotent accelerometer summary batch ingestion
 - Per-environment database files (`wellness_prod.db`, `wellness_test.db`)
 - Run: `cd server && .venv/bin/uvicorn main:app --reload`
-- Tests: `cd server && .venv/bin/pytest test_server.py -v`
+- Tests: `cd server && .venv/bin/pytest test_server.py analysis/test_analysis.py -v`
+
+## Analysis Module (`server/analysis/`, spec: `specs/workout_analysis.md`)
+- Run: `cd server && .venv/bin/python -m analysis --latest` (or `--session ID`,
+  `--list`, `--environment test`, `--hrmax N`, `--out DIR`, `--no-files`).
+- Pipeline per session: RR-quality gating → rolling 2-min DFA α1 trace (trusted
+  only when window artifacts ≤5% and no gap) → RMSSD → HR summary/zones →
+  signal-based work/rest bout detection (no laps). Emits terminal summary +
+  `report_<id>.json` + `report_<id>.png`.
+- numpy required; matplotlib optional (JSON always written, PNG only if present).
+- The α1 verdict is deliberately conservative — reports trusted-window mean but
+  states when data quality can't support a call (artifacts inflate α1). A
+  window is trusted only at RR coverage ≥95% AND artifacts ≤5% AND no gap;
+  only full 2-min windows within the data are analyzed. RMSSD pools diffs
+  within beat-adjacent runs (never across gaps); avg HR is duration-weighted.
+
+## Data & Analysis Notes (field-validated 2026-07-19)
+
+### Timestamps and Garmin workout alignment
+- `timestamp_device` is epoch ms on the phone's NTP-synced wall clock. The
+  LAST beat of each BLE notification is stamped at receipt; earlier beats are
+  placed backward by their RR durations. Colliding candidates spread backward
+  (never past receipt time); cross-notification same-ms collisions may bump
+  ≤1 ms forward (accepted limitation, needs sequence-in-PK to remove).
+- Garmin workouts align by pure timestamp cut: `activities.start_time +
+  duration_seconds` from the garmy-localdb MCP (`start_time` is LOCAL time;
+  our rows are UTC epoch). Validated on a real ride: in-window HR avg 141.1 /
+  max 147 vs Garmin's own 141 / 147 from the same strap via ANT+ — combined
+  phone/watch clock skew is well under a second.
+- NOTE: user does NOT press Garmin laps, so `activity_splits` is not a
+  reliable segmentation hook, and no per-second power/cadence is synced into
+  garmy-localdb (only daily HR/HRV/stress-type series). Segment the app's own
+  RR/HR signal directly instead — do not build analysis around lap markers.
+
+### Strap behavior (Garmin HRM 200)
+- The HRM 200 has a power button and SLEEPS aggressively: asleep = no BLE
+  advertising = nothing can connect and scans see nothing. Ritual: press the
+  strap button, then connect (or scan while pressing). Not fixable app-side.
+- Mid-workout BLE drops (supervision timeout, GATT status=8) cost ~8 s and
+  auto-recover via the reconnect path; the first post-gap row is gap-flagged.
+- During hard efforts (e.g. cycling) the strap omits RR values for beats it
+  can't measure confidently — observed ~15% RR dropout at threshold effort
+  with a CONTINUOUS timestamp/HR stream (no holes). Rest and low-intensity
+  segments have near-complete RR coverage.
+
+### Analysis guidance
+- Window by TIMESTAMPS, never by RR-sums (RR-sum deficit = scattered omitted
+  beats, not missing time).
+- Exclude analysis windows containing `is_gap = 1` rows.
+- Quality gate for HRV metrics: per-window RR coverage = SUM(rr_interval_ms)
+  / window wall time; require ≥ ~95% before trusting DFA α1 (artifact
+  tolerance ≈ 5% per literature). Filter `rr_interval_ms = 0` artifact rows.
+- Division of labor: HR time series for zones/pacing/decoupling; RR for
+  DFA α1 threshold detection (steady sub-threshold work), rest-interval RMSSD
+  (parasympathetic reactivation between reps), and HR on/off kinetics.
+- Segmentation without laps: DFA α1 is designed to be read as a CONTINUOUS
+  rolling trace (window crossing 0.75 = LT1, 0.5 = LT2) — no per-rep
+  segmentation required. For per-rep stats, auto-detect work/rest bouts from
+  the HR/RR signal (HR rise/decay, or α1 dip/rebound), not from lap markers.
+- DFA α1 reliability: artifacts INFLATE α1 (bias toward false "below
+  threshold"). Needs <5% artifacts after Kubios-style correction; hard/
+  variable efforts (~15% RR dropout observed) do NOT meet this bar. A
+  from-scratch DFA without artifact correction is a sanity read only, not a
+  verdict. Steady sub-threshold efforts with good strap contact are the
+  reliable regime.
 
 ## Current Status
 Phase 1 complete (all 8 steps). See `plans/phase1_implementation.md` for details.
