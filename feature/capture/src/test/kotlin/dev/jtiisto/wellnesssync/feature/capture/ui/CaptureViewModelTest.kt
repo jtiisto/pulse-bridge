@@ -13,6 +13,7 @@ import dev.jtiisto.wellnesssync.core.network.ServerHealthMonitor
 import dev.jtiisto.wellnesssync.core.network.ServerStatus
 import dev.jtiisto.wellnesssync.feature.capture.data.CaptureRepository
 import dev.jtiisto.wellnesssync.feature.capture.domain.model.CaptureEvent
+import dev.jtiisto.wellnesssync.feature.capture.domain.model.SignalQualityLevel
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
@@ -64,7 +65,7 @@ class CaptureViewModelTest {
         serverHealthMonitor = mockk(relaxed = true) {
             every { status } returns MutableStateFlow(ServerStatus.CHECKING)
         }
-        viewModel = CaptureViewModel(application, repository, serverHealthMonitor, clock = { clockMs })
+        viewModel = CaptureViewModel(application, repository, serverHealthMonitor, clock = { clockMs }, qualityTickMs = 0)
     }
 
     @AfterEach
@@ -215,7 +216,7 @@ class CaptureViewModelTest {
         val unsyncedFlow = MutableStateFlow(0)
         every { repository.unsyncedCount } returns unsyncedFlow
 
-        val vm = CaptureViewModel(application, repository, serverHealthMonitor)
+        val vm = CaptureViewModel(application, repository, serverHealthMonitor, qualityTickMs = 0)
         vm.state.test {
             awaitItem() // initial
 
@@ -248,6 +249,22 @@ class CaptureViewModelTest {
     }
 
     @Test
+    fun `signal quality is measuring after a single beat and clears on stop`() = runTest {
+        serviceStateFlow.value = BleCaptureServiceState(isRunning = true)
+        testDispatcher.scheduler.advanceUntilIdle()
+        beatFlow.emit(beatSample(rrs = listOf(800)))
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(SignalQualityLevel.MEASURING, viewModel.state.value.signalQuality.level)
+
+        serviceStateFlow.value = BleCaptureServiceState(isRunning = false)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(SignalQualityLevel.MEASURING, viewModel.state.value.signalQuality.level)
+        assertEquals(0, viewModel.state.value.signalQuality.rrCoveragePercent)
+    }
+
+    @Test
     fun `chart points are cleared when capture stops`() = runTest {
         serviceStateFlow.value = BleCaptureServiceState(isRunning = true)
         testDispatcher.scheduler.advanceUntilIdle()
@@ -275,7 +292,7 @@ class CaptureViewModelTest {
         val quarantinedFlow = MutableStateFlow(0)
         every { repository.quarantinedCount } returns quarantinedFlow
 
-        val vm = CaptureViewModel(application, repository, serverHealthMonitor, clock = { clockMs })
+        val vm = CaptureViewModel(application, repository, serverHealthMonitor, clock = { clockMs }, qualityTickMs = 0)
         vm.state.test {
             awaitItem() // initial
 
@@ -298,7 +315,7 @@ class CaptureViewModelTest {
         val syncFlow = MutableStateFlow<SyncStatusEntity?>(null)
         every { repository.syncStatus } returns syncFlow
 
-        val vm = CaptureViewModel(application, repository, serverHealthMonitor)
+        val vm = CaptureViewModel(application, repository, serverHealthMonitor, qualityTickMs = 0)
         vm.state.test {
             awaitItem() // initial
 

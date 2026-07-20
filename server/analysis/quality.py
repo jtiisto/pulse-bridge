@@ -9,6 +9,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
+# ============================================================================
+# ⚠ PARITY: these DFA signal-quality gates are mirrored LIVE on-device in the
+# Kotlin SignalQualityTracker
+# (feature/capture/domain/SignalQualityTracker.kt) so the app's "DFA signal:
+# Good" indicator promises exactly what this offline module will trust. If you
+# change a threshold or an ectopic/omission/coverage rule here, change it there
+# too. No shared test enforces this cross-language parity — keep them in sync
+# by hand. (See specs/signal_quality_indicator.md.)
+# ============================================================================
 ECTOPIC_THRESHOLD = 0.20   # |delta rr| / prev rr above this = ectopic/artifact
 OMISSION_FACTOR = 1.5      # timestamp gap > factor * rr = a beat was omitted
 MAX_TRUSTED_ARTIFACT = 0.05  # window artifact fraction ceiling for "trusted"
@@ -53,6 +62,9 @@ def classify(beats):
     # beat. A successive-difference test flags both the artifact and the valid
     # beat that returns to baseline, so correcting the rebound would reuse the
     # artifact value and inflate RMSSD/DFA.
+    # PARITY: the live SignalQualityTracker uses the same 5-beat median window
+    # and 20% threshold, but TRAILING (no future beats live) rather than the
+    # centered i-2..i+2 used here. Keep the size and threshold in sync.
     ectopic = np.zeros(len(rr), dtype=bool)
     for i in range(len(rr)):
         if rr[i] <= 0:

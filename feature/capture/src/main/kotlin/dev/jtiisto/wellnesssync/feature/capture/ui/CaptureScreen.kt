@@ -190,7 +190,10 @@ private fun CaptureScreenContent(
                     StatusCard(state)
                 }
                 item {
-                    TachogramChart(points = state.chartPoints)
+                    TachogramChart(
+                        points = state.chartPoints,
+                        signalQuality = state.signalQuality,
+                    )
                 }
             }
 

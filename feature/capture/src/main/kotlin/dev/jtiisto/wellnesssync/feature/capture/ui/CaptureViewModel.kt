@@ -7,12 +7,15 @@ import androidx.lifecycle.viewModelScope
 import dev.jtiisto.wellnesssync.core.ble.scanner.DiscoveredDevice
 import dev.jtiisto.wellnesssync.core.network.ServerHealthMonitor
 import dev.jtiisto.wellnesssync.feature.capture.data.CaptureRepository
+import dev.jtiisto.wellnesssync.feature.capture.domain.SignalQualityTracker
 import dev.jtiisto.wellnesssync.feature.capture.domain.TachogramBuffer
 import dev.jtiisto.wellnesssync.feature.capture.domain.model.CaptureEffect
 import dev.jtiisto.wellnesssync.feature.capture.domain.model.CaptureEvent
 import dev.jtiisto.wellnesssync.feature.capture.domain.model.CaptureState
+import dev.jtiisto.wellnesssync.feature.capture.domain.model.SignalQuality
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,6 +28,9 @@ class CaptureViewModel(
     private val repository: CaptureRepository,
     private val serverHealthMonitor: ServerHealthMonitor,
     clock: () -> Long = { SystemClock.elapsedRealtime() },
+    // Periodic signal-quality recompute so a silent sensor degrades the
+    // indicator even with no new beats. 0 disables the loop (tests).
+    private val qualityTickMs: Long = 2_000L,
 ) : AndroidViewModel(application) {
 
     private val _state = MutableStateFlow(CaptureState())
@@ -36,7 +42,9 @@ class CaptureViewModel(
     private var scanJob: Job? = null
     private var polarScanJob: Job? = null
     private var beatJob: Job? = null
+    private var qualityTickJob: Job? = null
     private val tachogramBuffer = TachogramBuffer(clock)
+    private val signalQualityTracker = SignalQualityTracker(clock)
     private val discoveredSet = mutableSetOf<String>()
     private val discoveredPolarSet = mutableSetOf<String>()
 
@@ -248,7 +256,23 @@ class CaptureViewModel(
         beatJob = viewModelScope.launch {
             repository.beatStream.collect { sample ->
                 tachogramBuffer.add(sample)
-                _state.update { it.copy(chartPoints = tachogramBuffer.points()) }
+                signalQualityTracker.add(sample)
+                _state.update {
+                    it.copy(
+                        chartPoints = tachogramBuffer.points(),
+                        signalQuality = signalQualityTracker.quality(),
+                    )
+                }
+            }
+        }
+        // Recompute quality on a timer so silence (sensor stops sending)
+        // degrades the indicator instead of leaving it stale
+        if (qualityTickMs > 0 && qualityTickJob?.isActive != true) {
+            qualityTickJob = viewModelScope.launch {
+                while (true) {
+                    delay(qualityTickMs)
+                    _state.update { it.copy(signalQuality = signalQualityTracker.quality()) }
+                }
             }
         }
     }
@@ -257,8 +281,11 @@ class CaptureViewModel(
         if (beatJob == null) return
         beatJob?.cancel()
         beatJob = null
+        qualityTickJob?.cancel()
+        qualityTickJob = null
         tachogramBuffer.reset()
-        _state.update { it.copy(chartPoints = emptyList()) }
+        signalQualityTracker.reset()
+        _state.update { it.copy(chartPoints = emptyList(), signalQuality = SignalQuality()) }
     }
 
     private fun observePolarSyncState() {

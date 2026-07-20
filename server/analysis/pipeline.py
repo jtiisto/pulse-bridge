@@ -31,7 +31,13 @@ def _covered_ms(run):
 
 
 def _window_alpha1(beats):
-    """Rolling DFA a1 windows with per-window quality gating."""
+    """Rolling DFA a1 windows with per-window quality gating.
+
+    ⚠ PARITY: the trust rule here (longest contiguous clean run covering
+    [0.95, 1.05] of the window, artifacts ≤5%, no gap) is mirrored live in the
+    Kotlin SignalQualityTracker so the app's DFA-signal indicator agrees with
+    what this trusts. Change the rule here → change it there too.
+    """
     if len(beats) < 2:
         return []
     t0 = beats[0].ts_ms

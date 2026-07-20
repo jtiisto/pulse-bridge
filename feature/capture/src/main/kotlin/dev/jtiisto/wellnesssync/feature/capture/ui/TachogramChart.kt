@@ -4,14 +4,21 @@ import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.ui.draw.clip
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,8 +40,13 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.jtiisto.wellnesssync.core.ui.theme.Success
+import dev.jtiisto.wellnesssync.core.ui.theme.SyncGray
+import dev.jtiisto.wellnesssync.core.ui.theme.Warning
 import dev.jtiisto.wellnesssync.feature.capture.domain.TachogramScale
 import dev.jtiisto.wellnesssync.feature.capture.domain.model.BeatPoint
+import dev.jtiisto.wellnesssync.feature.capture.domain.model.SignalQuality
+import dev.jtiisto.wellnesssync.feature.capture.domain.model.SignalQualityLevel
 
 private const val WINDOW_MS = 10_000L
 private const val GAP_BREAK_MS = 3_000L
@@ -46,6 +58,7 @@ private const val GAP_BREAK_MS = 3_000L
 @Composable
 fun TachogramChart(
     points: List<BeatPoint>,
+    signalQuality: SignalQuality = SignalQuality(),
     modifier: Modifier = Modifier,
 ) {
     // Frame-driven "now" keeps the trace scrolling smoothly between beats.
@@ -84,11 +97,18 @@ fun TachogramChart(
             )
             .padding(12.dp),
     ) {
-        Text(
-            text = "Live HR (bpm) — 10 s",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Live HR (bpm) — 10 s",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SignalQualityIndicator(signalQuality)
+        }
         Box(modifier = Modifier.fillMaxWidth()) {
             Canvas(
                 modifier = Modifier
@@ -178,6 +198,38 @@ fun TachogramChart(
                     modifier = Modifier.align(Alignment.Center),
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun SignalQualityIndicator(quality: SignalQuality) {
+    val (color, label) = when (quality.level) {
+        SignalQualityLevel.GOOD -> Success to "Good"
+        SignalQualityLevel.FAIR -> Warning to "Fair"
+        SignalQualityLevel.POOR -> MaterialTheme.colorScheme.error to "Poor"
+        SignalQualityLevel.MEASURING -> SyncGray to "Measuring…"
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(color),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = "DFA signal: $label",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        if (quality.level != SignalQualityLevel.MEASURING) {
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = "${quality.rrCoveragePercent}% RR",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
