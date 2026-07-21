@@ -1,9 +1,10 @@
-# Wellness Sync (pulse-bridge)
+# Pulse Bridge (pulse-bridge)
 
 ## Overview
 Native Android app acting as a BLE data bridge — captures heart rate and RR interval data from BLE sensors (Garmin HRM chest strap in Phase 1, Polar Verity Sense in Phase 2), stores locally in Room, and batch-syncs to a server.
 
-Published at https://github.com/jtiisto/pulse-bridge (repo renamed for clarity; local directory, base package, and app label remain Wellness Sync).
+Published at https://github.com/jtiisto/pulse-bridge. The app label, Gradle
+project, base package, server files, and MCP package use the Pulse Bridge name.
 
 ## Tech Stack
 - Kotlin + Jetpack Compose
@@ -17,7 +18,7 @@ Published at https://github.com/jtiisto/pulse-bridge (repo renamed for clarity; 
 
 ## Module Structure
 ```
-wellness-sync/
+pulse-bridge/
 ├── app/                    # Application shell (DI wiring, navigation, settings)
 ├── core/
 │   ├── common/            # Date/time utils, ID generation, EnvironmentStore
@@ -33,7 +34,7 @@ wellness-sync/
 └── plans/                 # Reference docs (not code)
 ```
 
-Base package: `dev.jtiisto.wellnesssync`
+Base package: `dev.jtiisto.pulsebridge`
 
 ## Workflow
 - **Spec-driven development**: specs/ directory with one spec per feature, approved before implementation
@@ -60,8 +61,15 @@ Base package: `dev.jtiisto.wellnesssync`
 - `GET /api/v1/health` — status + interval count + accelerometer summary count per environment
 - `POST /api/v1/intervals/batch` — idempotent batch ingestion
 - `POST /api/v1/accelerometer/batch` — idempotent accelerometer summary batch ingestion
-- Per-environment database files (`wellness_prod.db`, `wellness_test.db`)
+- Per-environment database files (`pulse_bridge_prod.db`, `pulse_bridge_test.db`)
 - Run: `cd server && .venv/bin/uvicorn main:app --reload`
+- Deploy server/MCP runtime: `./bin/deploy-prod.sh /path/to/pulse-bridge-prod`
+  - If Android files changed, deploy builds `:app:assembleDebug` and copies a
+    fresh APK to the rclone target
+    `${PULSE_BRIDGE_APK_REMOTE_DIR:-gdrive:Pulse Bridge/APKs}`. Use
+    `PULSE_BRIDGE_COPY_APK=always` or `never` to override the default
+    changed-files behavior.
+- Production server helper: `./bin/server.sh start` from the deployed root
 - Tests: `cd server && .venv/bin/pytest test_server.py analysis/test_analysis.py -v`
 
 ## Analysis Module (`server/analysis/`, spec: `specs/workout_analysis.md`)

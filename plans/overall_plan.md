@@ -3,7 +3,7 @@
 
 > **Scope note**: This document describes the overall system architecture spanning
 > hardware, server-side pipeline, and client apps. Files in this project
-> (`wellness-sync`) are focused exclusively on the **native Android app** development.
+> (`pulse-bridge`) are focused exclusively on the **native Android app** development.
 > This plan is included here for reference only — it is not the spec for this project.
 
 > **Note on math rendering**: Formulas use LaTeX syntax (`$$...$$`).

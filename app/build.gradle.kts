@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "dev.jtiisto.wellnesssync"
+    namespace = "dev.jtiisto.pulsebridge"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "dev.jtiisto.wellnesssync"
+        applicationId = "dev.jtiisto.pulsebridge"
         minSdk = 35
         targetSdk = 35
         versionCode = 1

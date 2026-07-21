@@ -1,4 +1,4 @@
-# Initial UI Design Guide — Wellness Sync
+# Initial UI Design Guide — Pulse Bridge
 
 > **Temporary design.** This UI will be redesigned later in Stitch. The architecture
 > (MVI state, ViewModels, Repositories) is decoupled from the UI layer so Compose

@@ -26,7 +26,7 @@ Add 24/7 PPI and accelerometer capture from Polar Verity Sense (PVS) via offline
    - `getUnsyncedSummaries(limit)` — for sync
    - `markSynced(deviceId, windowStarts, syncedAt)` — after server accepts
    - `getUnsyncedCount()` — Flow for UI
-5. Add entity + DAO to `WellnessSyncDatabase`
+5. Add entity + DAO to `PulseBridgeDatabase`
 6. Database migration (version bump)
 7. Unit tests for DAO
 

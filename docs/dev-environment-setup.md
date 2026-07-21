@@ -210,7 +210,7 @@ adb -s 100.x.x.x:5555 install -r app/build/outputs/apk/debug/app-debug.apk
 adb logcat --pid=$(adb shell pidof dev.jtiisto.wellness)
 
 # Or filter by tag
-adb logcat -s "WellnessSync"
+adb logcat -s "PulseBridge"
 ```
 
 ### Reconnect after emulator restart

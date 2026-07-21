@@ -63,7 +63,7 @@ The following are already built and tested:
 **Lifecycle:**
 1. UI sends `startService()` with device address as intent extra
 2. Service promotes to foreground immediately (`startForeground()` with notification)
-3. Acquires `PARTIAL_WAKE_LOCK` (tagged `WellnessSync:BleCapture`)
+3. Acquires `PARTIAL_WAKE_LOCK` (tagged `PulseBridge:BleCapture`)
 4. Creates a `DeviceSessionEntity` (UUID, start time, device info)
 5. Creates `GarminHrmConnection` → calls `connect()`
 6. Registers connection's `heartRateData` flow with `PriorityMultiplexer`
@@ -171,7 +171,7 @@ sealed interface CaptureEffect {
 - **Clear local data** action in the app to wipe Room database for testing cleanup
 
 **Server-side:**
-- Server reads the `X-Environment` header and routes to a separate SQLite database file per environment (e.g. `wellness_prod.db`, `wellness_test.db`)
+- Server reads the `X-Environment` header and routes to a separate SQLite database file per environment (e.g. `pulse_bridge_prod.db`, `pulse_bridge_test.db`)
 - Both databases have identical schema — analysis can run against either
 - Test data cleanup is manual (delete the test DB file)
 - No API endpoint for cleanup needed
@@ -218,7 +218,7 @@ The project follows the same conventions as the sibling `wellness` app at `/home
 ## Module Structure
 
 ```
-wellness-sync/
+pulse-bridge/
 ├── app/                              # Application shell
 ├── core/
 │   ├── common/                       # Shared utilities, date/time helpers
@@ -237,7 +237,7 @@ wellness-sync/
 └── CLAUDE.md
 ```
 
-Base package: `dev.jtiisto.wellnesssync`
+Base package: `dev.jtiisto.pulsebridge`
 
 ## Implementation Steps
 
@@ -249,15 +249,15 @@ Create the Gradle multi-module project that compiles and installs on the emulato
 
 **Files to create:**
 - `build.gradle.kts` (root) — plugin declarations, no apply
-- `settings.gradle.kts` — all module includes, rootProject.name = "wellness-sync"
+- `settings.gradle.kts` — all module includes, rootProject.name = "pulse-bridge"
 - `gradle.properties` — JVM args, AndroidX, non-transitive R classes
 - `gradle/libs.versions.toml` — copy from wellness, no new deps needed for Phase 1
-- `app/build.gradle.kts` — applicationId `dev.jtiisto.wellnesssync`, compileSdk/minSdk/targetSdk = 35, JDK 21
+- `app/build.gradle.kts` — applicationId `dev.jtiisto.pulsebridge`, compileSdk/minSdk/targetSdk = 35, JDK 21
 - `app/src/main/AndroidManifest.xml` — declare BLE permissions and foreground service types upfront
-- `app/src/main/kotlin/.../WellnessSyncApplication.kt` — Koin init
+- `app/src/main/kotlin/.../PulseBridgeApplication.kt` — Koin init
 - `app/src/main/kotlin/.../MainActivity.kt` — setContent with theme
 - `app/src/main/kotlin/.../di/AppModule.kt` — empty, wires sub-modules later
-- `app/src/main/kotlin/.../navigation/WellnessSyncNavHost.kt` — single route for now
+- `app/src/main/kotlin/.../navigation/PulseBridgeNavHost.kt` — single route for now
 - `core/common/build.gradle.kts` + `DateTimeUtils.kt`
 - `core/ui/build.gradle.kts` + `Theme.kt`, `Color.kt`, `Type.kt` (per `specs/initial_ui_design.md`)
 - All other module `build.gradle.kts` stubs (database, network, sync, ble, feature/capture)
@@ -513,7 +513,7 @@ Connect all Koin modules and verify end-to-end.
 
 10. **Smart device selection with known-device auto-connect** — Previously connected devices stored in SharedPreferences (address + name). On scan, if a known device is discovered, auto-connect without user action. Unknown devices shown in a list for manual selection. Known devices can be removed (in case of accidental selection, e.g. someone else's strap in a gym). After first pairing, subsequent connections are fully automatic.
 
-11. **Runtime test/production environment toggle** — App UI toggle (SharedPreferences, defaults to production) sends `X-Environment` header with sync requests. Server routes to separate SQLite DB files per environment (`wellness_prod.db`, `wellness_test.db`). Identical schema — analysis runs on either. Test cleanup is manual file deletion. Local Room database is shared (no app-side separation). "Clear local data" action available for testing cleanup.
+11. **Runtime test/production environment toggle** — App UI toggle (SharedPreferences, defaults to production) sends `X-Environment` header with sync requests. Server routes to separate SQLite DB files per environment (`pulse_bridge_prod.db`, `pulse_bridge_test.db`). Identical schema — analysis runs on either. Test cleanup is manual file deletion. Local Room database is shared (no app-side separation). "Clear local data" action available for testing cleanup.
 
 ## Workflow
 

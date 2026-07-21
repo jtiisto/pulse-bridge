@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.jtiisto.wellnesssync.feature.capture"
+    namespace = "dev.jtiisto.pulsebridge.feature.capture"
     compileSdk = 35
 
     defaultConfig {

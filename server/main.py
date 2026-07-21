@@ -15,7 +15,7 @@ from models import (
     SyncResponse,
 )
 
-app = FastAPI(title="Wellness Sync Server", version="0.1.0")
+app = FastAPI(title="Pulse Bridge Server", version="0.1.0")
 
 VALID_ENVIRONMENTS = ("production", "test")
 

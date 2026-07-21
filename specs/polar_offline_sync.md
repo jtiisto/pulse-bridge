@@ -241,7 +241,7 @@ The Polar SDK brings its own BLE handling — we do NOT use raw Android BLE APIs
 | `core/ble/build.gradle.kts` | Add Polar SDK dependency |
 | `core/ble/.../di/BleModule.kt` | Register Polar components in Koin |
 | `core/ble/.../device/KnownDeviceStore.kt` | Support Polar device type (or create separate store) |
-| `core/database/.../WellnessSyncDatabase.kt` | Add AccelerometerSummaryEntity + DAO |
+| `core/database/.../PulseBridgeDatabase.kt` | Add AccelerometerSummaryEntity + DAO |
 | `core/sync/.../SyncManager.kt` | Sync ACC summaries alongside intervals |
 | `core/sync/.../SyncWorker.kt` | Trigger ACC sync |
 | `feature/capture/.../ui/CaptureScreen.kt` | Polar device management UI |

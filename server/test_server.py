@@ -12,8 +12,8 @@ os.environ["_TEST_DATA_DIR"] = _test_dir
 import config
 config.DATA_DIR = type(config.DATA_DIR)(_test_dir)
 config.DB_FILES = {
-    "production": config.DATA_DIR / "wellness_prod.db",
-    "test": config.DATA_DIR / "wellness_test.db",
+    "production": config.DATA_DIR / "pulse_bridge_prod.db",
+    "test": config.DATA_DIR / "pulse_bridge_test.db",
 }
 config.DIAG_DIR = config.DATA_DIR / "diagnostics"
 

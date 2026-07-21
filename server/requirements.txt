@@ -6,3 +6,6 @@ pydantic>=2.10.0
 # optional at runtime (PNG charts) but listed for a complete environment.
 numpy>=2.0.0
 matplotlib>=3.8.0
+
+# MCP interface for local LLM access to captured sessions.
+fastmcp>=2.0.0

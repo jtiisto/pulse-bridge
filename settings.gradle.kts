@@ -22,7 +22,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "wellness-sync"
+rootProject.name = "pulse-bridge"
 
 include(":app")
 include(":core:common")

@@ -1,0 +1,49 @@
+# Deployment manifest -- the single source of truth for what ships to production.
+#
+# Consumed by:
+#   - bin/deploy-prod.sh
+#   - server/test_deploy_manifest.py
+#
+# Format: "<action> <path>" per line. Blank lines and # comments are ignored.
+#   ship-dir <dir>      top-level dir, rsynced to prod with runtime-safe excludes
+#   ship-file <file>    top-level file copied to prod
+#   ship-bin <script>   bin/ script copied to prod and marked executable
+#   exclude <path>      top-level entry intentionally NOT deployed
+#   exclude-bin <name>  bin/ entry intentionally NOT deployed
+
+# ---- Shipped to production ----
+ship-dir   server
+ship-dir   mcp_servers
+
+ship-bin   server.sh
+
+# ---- Intentionally NOT shipped (Android/dev/test/docs/config/state) ----
+exclude    app
+exclude    core
+exclude    feature
+exclude    docs
+exclude    specs
+exclude    plans
+exclude    testdata
+exclude    gradle
+exclude    gradlew
+exclude    gradlew.bat
+exclude    build.gradle.kts
+exclude    settings.gradle.kts
+exclude    gradle.properties
+exclude    local.properties
+exclude    .agents
+exclude    .claude
+exclude    .gitignore
+exclude    AGENTS.md
+exclude    CLAUDE.md
+
+# Generated/local state.
+exclude    build
+exclude    .gradle
+exclude    .kotlin
+exclude    .pytest_cache
+
+# ---- bin/ entries that are dev-only ----
+exclude-bin  deploy-prod.sh
+exclude-bin  deploy.manifest

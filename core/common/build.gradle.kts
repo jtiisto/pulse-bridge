@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.jtiisto.wellnesssync.core.common"
+    namespace = "dev.jtiisto.pulsebridge.core.common"
     compileSdk = 35
 
     defaultConfig {
