@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Pre-commit hook: run the tests relevant to what is staged.
+#
+#   * Android files staged  -> ./gradlew testDebugUnitTest (Gradle skips
+#                              up-to-date modules, so this stays fast)
+#   * server files staged   -> server pytest suite (no coverage gate here;
+#                              that runs pre-push)
+#   * testdata/golden/      -> BOTH suites (shared contract fixtures)
+#   * docs-only commit      -> skip tests
+#
+# Tracked in githooks/ and activated per-clone with
+#   git config core.hooksPath githooks
+set -uo pipefail
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+staged="$(git diff --cached --name-only --diff-filter=ACMR)"
+if [[ -z "$staged" ]]; then
+    echo "pre-commit: nothing staged — nothing to test."
+    exit 0
+fi
+
+android=0
+server=0
+
+if printf '%s\n' "$staged" | grep -qE '^(app|core|feature)/|^build\.gradle|^settings\.gradle|^gradle(/|\.properties)|^testdata/golden/'; then
+    android=1
+fi
+if printf '%s\n' "$staged" | grep -qE '^server/|^testdata/golden/'; then
+    server=1
+fi
+
+if [[ "$android" == "0" && "$server" == "0" ]]; then
+    echo "pre-commit: docs/tooling-only commit — skipping tests."
+    exit 0
+fi
+
+if [[ "$server" == "1" ]]; then
+    echo "pre-commit: server files staged — running server pytest suite..."
+    (cd server && .venv/bin/pytest test_server.py analysis/test_analysis.py -q) || {
+        echo "pre-commit: SERVER TESTS FAILED — commit aborted." >&2
+        exit 1
+    }
+fi
+
+if [[ "$android" == "1" ]]; then
+    echo "pre-commit: Android files staged — running unit tests..."
+    ./gradlew testDebugUnitTest -q || {
+        echo "pre-commit: ANDROID UNIT TESTS FAILED — commit aborted." >&2
+        exit 1
+    }
+fi
+
+echo "pre-commit: checks passed."

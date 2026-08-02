@@ -1,0 +1,6 @@
+# Coverage config for the pre-push gate (githooks/pre-push).
+# Test files are omitted so the metric tracks production code only.
+[run]
+omit =
+    test_*.py
+    */test_*.py

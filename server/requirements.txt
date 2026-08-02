@@ -9,3 +9,7 @@ matplotlib>=3.8.0
 
 # MCP interface for local LLM access to captured sessions.
 fastmcp>=2.0.0
+
+# Test-only (used by githooks/pre-commit and pre-push coverage gate).
+pytest>=9.0.0
+pytest-cov>=6.0.0

@@ -42,6 +42,26 @@ Base package: `dev.jtiisto.pulsebridge`
 - JUnit 5 + MockK + Turbine for testing
 - minSdk 35, targetSdk 35, JDK 21
 
+## Git Hooks & Coverage
+- Hooks live in `githooks/` (tracked), activated per-clone with
+  `git config core.hooksPath githooks`. Commits/pushes route through
+  `bin/git-commit-push.sh` (detached; see `dev/CLAUDE.md` workflow).
+- **pre-commit** — tests scoped to staged paths: Android files →
+  `testDebugUnitTest`; `server/` → server pytest; `testdata/golden/` → both;
+  docs-only → skip.
+- **pre-push** — full suite with coverage gates on code pushes (docs-only and
+  no-op pushes skip): `testDebugUnitTest` + `koverVerifyAggregated` (merged
+  Kover line coverage, minBound 54 in root `build.gradle.kts`; Composables
+  and generated classes excluded) and server pytest with
+  `--cov-fail-under=57` (`SERVER_COV_FAIL_UNDER` in `githooks/pre-push`;
+  `server/.coveragerc` omits test files). Baselines measured 2026-08-01:
+  Android 55.6%, server 59%. Raise gates as coverage improves; never lower
+  without a deliberate decision. Overrides: `PULSE_BRIDGE_FULL_PUSH=1`,
+  `PREPUSH_DRYRUN=1`.
+- Instrumented (androidTest) tests are NOT in the hooks — they need the
+  Windows emulator over ADB. Untested server modules dragging the baseline:
+  `analysis/vo2.py`, `analysis/intent.py` (0% as of 2026-08-01).
+
 ## Key Design Decisions
 - One row per RR interval (not per BLE notification)
 - Device-level timestamps as PK
