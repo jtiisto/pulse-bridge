@@ -143,6 +143,8 @@ Phase 2 Steps 1-7 complete (Polar Verity Sense integration). 161 Android unit te
 
 Live tachogram chart implemented (scrolling 10 s instantaneous-HR chart with grid on the capture screen, shown while capturing). Spec: `specs/live_tachogram_chart.md`. On-device visual verification pending.
 
+Screen stays awake while a capture session is active (`KeepScreenOnWhileCapturing` at the app root mirrors the capture service's `isRunning` onto `View.keepScreenOn`; normal dimming resumes when capture stops or the app leaves the foreground). Spec: `specs/keep_screen_on.md`.
+
 Live DFA signal-quality indicator in the tachogram card header (`SignalQualityTracker` in feature/capture/domain): rolling RR coverage + artifact + gap read over a 2-min window, mapped to Good/Fair/Poor/Measuring with live RR-coverage %. Thresholds mirror the offline analysis module (≥95% coverage, ≤5% artifacts, no gap = Good), so green means the offline DFA will trust the data. Spec: `specs/signal_quality_indicator.md`.
 
 ⚠ CROSS-LANGUAGE PARITY: the Kotlin `SignalQualityTracker` and the Python offline analysis (`server/analysis/quality.py` thresholds + `pipeline.py` `_window_alpha1` trust rule) intentionally implement the SAME DFA gates. No shared test enforces this — both files carry a `⚠ PARITY` comment. When editing a threshold or an ectopic/omission/coverage rule in one, change the other too, or the "DFA signal: Good" indicator stops meaning "the server will trust this".
