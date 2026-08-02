@@ -51,16 +51,21 @@ Base package: `dev.jtiisto.pulsebridge`
   docs-only → skip.
 - **pre-push** — full suite with coverage gates on code pushes (docs-only and
   no-op pushes skip): `testDebugUnitTest` + `koverVerifyAggregated` (merged
-  Kover line coverage, minBound 54 in root `build.gradle.kts`; Composables
-  and generated classes excluded) and server pytest with
-  `--cov-fail-under=57` (`SERVER_COV_FAIL_UNDER` in `githooks/pre-push`;
-  `server/.coveragerc` omits test files). Baselines measured 2026-08-01:
-  Android 55.6%, server 59%. Raise gates as coverage improves; never lower
-  without a deliberate decision. Overrides: `PULSE_BRIDGE_FULL_PUSH=1`,
-  `PREPUSH_DRYRUN=1`.
+  Kover line coverage, minBound 82 in root `build.gradle.kts`) and server
+  pytest with `--cov-fail-under=86` (`SERVER_COV_FAIL_UNDER` in
+  `githooks/pre-push`; `server/.coveragerc` omits test files). Baselines
+  measured 2026-08-01 after the coverage backfill: Android 83.5%, server 88%.
+  Raise gates as coverage improves; never lower without a deliberate
+  decision. Overrides: `PULSE_BRIDGE_FULL_PUSH=1`, `PREPUSH_DRYRUN=1`.
+- The Kover metric excludes device-only framework glue (services, workers,
+  receivers, notification builders, OS-API wrappers, DI modules, theme,
+  Composables, generated code — the explicit list with rationale is in root
+  `build.gradle.kts`) so the gate tracks unit-testable logic.
+  Testable-in-principle classes (stores, `ServerHealthMonitor`, models) stay
+  in the metric even while untested.
 - Instrumented (androidTest) tests are NOT in the hooks — they need the
-  Windows emulator over ADB. Untested server modules dragging the baseline:
-  `analysis/vo2.py`, `analysis/intent.py` (0% as of 2026-08-01).
+  Windows emulator over ADB. Remaining known server gaps: `analysis/__main__.py`
+  (CLI glue, 0%) and `analysis/db.py` (38%).
 
 ## Key Design Decisions
 - One row per RR interval (not per BLE notification)
@@ -90,7 +95,7 @@ Base package: `dev.jtiisto.pulsebridge`
     `PULSE_BRIDGE_COPY_APK=always` or `never` to override the default
     changed-files behavior.
 - Production server helper: `./bin/server.sh start` from the deployed root
-- Tests: `cd server && .venv/bin/pytest test_server.py analysis/test_analysis.py -v`
+- Tests: `cd server && .venv/bin/pytest -v` (collection roots in `server/pytest.ini`)
 
 ## Analysis Module (`server/analysis/`, spec: `specs/workout_analysis.md`)
 - Run: `cd server && .venv/bin/python -m analysis --latest` (or `--session ID`,
@@ -159,7 +164,7 @@ Base package: `dev.jtiisto.pulsebridge`
 ## Current Status
 Phase 1 complete (all 8 steps). See `plans/phase1_implementation.md` for details.
 
-Phase 2 Steps 1-7 complete (Polar Verity Sense integration). 161 Android unit tests + 32 server tests + 31 instrumented tests = 224 tests, 0 failures (instrumented run pending emulator). Shared golden payload contract fixtures live in `testdata/golden/` — the Kotlin serializer (`GoldenPayloadTest`, using the production `ApiJson`) and the server pytest suite both assert against the same files. Step 8 (integration testing with physical PVS device) pending. Spec: `specs/polar_offline_sync.md`. Plan: `plans/phase2_implementation.md`.
+Phase 2 Steps 1-7 complete (Polar Verity Sense integration). 190 Android unit tests + 154 server tests + 31 instrumented tests = 375 tests, 0 failures (instrumented run pending emulator). Shared golden payload contract fixtures live in `testdata/golden/` — the Kotlin serializer (`GoldenPayloadTest`, using the production `ApiJson`) and the server pytest suite both assert against the same files. Step 8 (integration testing with physical PVS device) pending. Spec: `specs/polar_offline_sync.md`. Plan: `plans/phase2_implementation.md`.
 
 Live tachogram chart implemented (scrolling 10 s instantaneous-HR chart with grid on the capture screen, shown while capturing). Spec: `specs/live_tachogram_chart.md`. On-device visual verification pending.
 

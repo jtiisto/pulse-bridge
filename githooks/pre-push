@@ -25,11 +25,12 @@
 #   git config core.hooksPath githooks
 set -uo pipefail
 
-# Coverage gates (baselines measured 2026-08-01: Android line 55.6%, server
-# 59% with test files omitted). Raise as coverage improves; never lower
-# without a deliberate decision. The Android bound lives in build.gradle.kts
+# Coverage gates (baselines measured 2026-08-01 after the coverage backfill:
+# Android line 83.5% with device-only glue excluded, server 88% with test
+# files omitted). Raise as coverage improves; never lower without a
+# deliberate decision. The Android bound lives in build.gradle.kts
 # (kover verify minBound).
-SERVER_COV_FAIL_UNDER=57
+SERVER_COV_FAIL_UNDER=86
 
 ZERO="0000000000000000000000000000000000000000"
 BASELINE_REF="origin/main"
@@ -107,7 +108,7 @@ case "$decision" in
         echo "Running full Android unit suite with coverage gate..."
         ./gradlew testDebugUnitTest koverVerifyAggregated || exit $?
         echo "Running full server suite with coverage gate..."
-        (cd server && .venv/bin/pytest test_server.py analysis/test_analysis.py \
+        (cd server && .venv/bin/pytest \
             --cov=main --cov=analysis --cov-report=term \
             --cov-fail-under="$SERVER_COV_FAIL_UNDER" -q) || exit $?
         echo "All tests passed with sufficient coverage. Pushing..."

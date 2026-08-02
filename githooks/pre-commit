@@ -37,7 +37,7 @@ fi
 
 if [[ "$server" == "1" ]]; then
     echo "pre-commit: server files staged — running server pytest suite..."
-    (cd server && .venv/bin/pytest test_server.py analysis/test_analysis.py -q) || {
+    (cd server && .venv/bin/pytest -q) || {
         echo "pre-commit: SERVER TESTS FAILED — commit aborted." >&2
         exit 1
     }

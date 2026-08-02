@@ -12,5 +12,8 @@ __pycache__/
 *.pyo
 local.properties
 /app/build
+/core/build
 /core/*/build
+/feature/build
 /feature/*/build
+server/.coverage
