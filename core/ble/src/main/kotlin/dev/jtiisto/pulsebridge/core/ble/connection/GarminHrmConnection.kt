@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
@@ -38,6 +39,10 @@ class GarminHrmConnection(
     private val reconnectionStrategy: ReconnectionStrategy = ReconnectionStrategy(),
     private val connectTimeoutMs: Long = DEFAULT_CONNECT_TIMEOUT_MS,
     private val firstSampleTimeoutMs: Long = DEFAULT_FIRST_SAMPLE_TIMEOUT_MS,
+    // Address-filtered advertisement scan run alongside each connect attempt
+    // so a watchdog abort can say WHICH failure happened (null = don't probe).
+    // Spec: specs/advertising_probe.md
+    private val advertisementProbe: ((String) -> Flow<Int>)? = null,
 ) : BleDeviceConnection {
 
     companion object {
@@ -80,6 +85,20 @@ class GarminHrmConnection(
     private var connectWatchdogJob: Job? = null
     private var firstSampleWatchdogJob: Job? = null
 
+    private enum class ProbeState { INACTIVE, LISTENING, HEARD, UNAVAILABLE }
+
+    private var probeJob: Job? = null
+
+    @Volatile
+    private var probeState = ProbeState.INACTIVE
+
+    @Volatile
+    private var probeRssi: Int? = null
+
+    /** Probe verdict from the most recent watchdog abort, for retry/give-up messages. */
+    @Volatile
+    private var lastFailureDiagnosis: String? = null
+
     @Volatile
     private var awaitingFirstSample = false
 
@@ -90,6 +109,7 @@ class GarminHrmConnection(
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     cancelConnectWatchdog()
+                    stopAdvertisementProbe()
                     _connectionState.value = ConnectionState.CONNECTED
                     // Retry budget resets on the FIRST SAMPLE, not here —
                     // resetting on a bare link would let repeated post-connect
@@ -192,6 +212,9 @@ class GarminHrmConnection(
         gatt = null
 
         _connectionState.value = ConnectionState.CONNECTING
+        // Each attempt owns its probe verdict — a stale one must not label a
+        // later failure that the probe never observed
+        lastFailureDiagnosis = null
         diagnosticLog.log("garmin", "connect() to $address")
 
         val newGatt = try {
@@ -213,6 +236,7 @@ class GarminHrmConnection(
         }
 
         gatt = newGatt
+        startAdvertisementProbe()
         startConnectWatchdog()
     }
 
@@ -223,6 +247,8 @@ class GarminHrmConnection(
         reconnectJob = null
         cancelConnectWatchdog()
         cancelFirstSampleWatchdog()
+        stopAdvertisementProbe()
+        lastFailureDiagnosis = null
         reconnectionStrategy.reset()
         _connectionState.value = ConnectionState.DISCONNECTED
         _connectionDetail.value = null
@@ -254,6 +280,7 @@ class GarminHrmConnection(
             // Data flowing is the real definition of a healthy link
             reconnectionStrategy.reset()
             _connectionDetail.value = null
+            lastFailureDiagnosis = null
             diagnosticLog.log("garmin", "first sample received — link healthy")
         }
 
@@ -272,10 +299,13 @@ class GarminHrmConnection(
     }
 
     private fun attemptReconnect() {
+        // "(strap not advertising — ...)" or "(strap is advertising — ...)"
+        // from the last watchdog abort; empty for non-watchdog failures
+        val diagnosis = lastFailureDiagnosis?.let { " ($it)" } ?: ""
         if (!reconnectionStrategy.hasAttemptsRemaining) {
-            diagnosticLog.log("garmin", "giving up after ${reconnectionStrategy.currentAttempt} attempts")
+            diagnosticLog.log("garmin", "giving up after ${reconnectionStrategy.currentAttempt} attempts$diagnosis")
             _connectionDetail.value =
-                "Unable to connect after ${reconnectionStrategy.currentAttempt} attempts"
+                "Unable to connect after ${reconnectionStrategy.currentAttempt} attempts$diagnosis"
             return
         }
         _connectionState.value = ConnectionState.RECONNECTING
@@ -285,10 +315,10 @@ class GarminHrmConnection(
             val delayDuration = reconnectionStrategy.nextDelay()
             diagnosticLog.log(
                 "garmin",
-                "attempt ${reconnectionStrategy.currentAttempt} failed — retrying in $delayDuration",
+                "attempt ${reconnectionStrategy.currentAttempt} failed$diagnosis — retrying in $delayDuration",
             )
             _connectionDetail.value =
-                "Connect attempt ${reconnectionStrategy.currentAttempt} failed — retrying"
+                "Connect attempt ${reconnectionStrategy.currentAttempt} failed$diagnosis — retrying"
             delay(delayDuration)
             if (_connectionState.value == ConnectionState.RECONNECTING) {
                 connect()
@@ -302,13 +332,60 @@ class GarminHrmConnection(
         connectWatchdogJob = scope.launch {
             delay(connectTimeoutMs)
             if (_connectionState.value == ConnectionState.CONNECTING) {
-                diagnosticLog.log("garmin", "watchdog fired after ${connectTimeoutMs}ms — aborting connect")
+                // Read the probe verdict BEFORE tearing the probe down
+                lastFailureDiagnosis = when (probeState) {
+                    ProbeState.HEARD ->
+                        "strap is advertising, rssi=$probeRssi — connection failed or rejected"
+                    ProbeState.LISTENING ->
+                        "strap not advertising — likely held by another device (watch/ANT+) or asleep"
+                    // UNAVAILABLE/INACTIVE: probe told us nothing — never
+                    // claim "not advertising" without having listened
+                    else -> null
+                }
+                stopAdvertisementProbe()
+                val diagnosis = lastFailureDiagnosis?.let { " ($it)" } ?: ""
+                diagnosticLog.log(
+                    "garmin",
+                    "watchdog fired after ${connectTimeoutMs}ms — aborting connect$diagnosis",
+                )
                 gatt?.close()
                 gatt = null
                 _connectionState.value = ConnectionState.DISCONNECTED
                 attemptReconnect()
             }
         }
+    }
+
+    private fun startAdvertisementProbe() {
+        val probe = advertisementProbe ?: return
+        probeJob?.cancel()
+        probeState = ProbeState.LISTENING
+        probeRssi = null
+        probeJob = scope.launch {
+            try {
+                // first() cancels the underlying scan after one advertisement —
+                // one confirmation per attempt is all the verdict needs
+                val rssi = probe(address).first()
+                probeState = ProbeState.HEARD
+                probeRssi = rssi
+                diagnosticLog.log("garmin", "probe: advertisement heard rssi=$rssi")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Scan failed or completed empty — the verdict must stay
+                // agnostic, not read as "strap silent"
+                if (probeState == ProbeState.LISTENING) {
+                    probeState = ProbeState.UNAVAILABLE
+                    diagnosticLog.log("garmin", "probe unavailable: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun stopAdvertisementProbe() {
+        probeJob?.cancel()
+        probeJob = null
+        probeState = ProbeState.INACTIVE
     }
 
     private fun cancelConnectWatchdog() {

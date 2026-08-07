@@ -3,6 +3,7 @@ package dev.jtiisto.pulsebridge.core.ble.scanner
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -81,6 +82,57 @@ class BleScanner(
         awaitClose {
             diagnosticLog.log("scan", "scan stopped")
             scanner.stopScan(callback)
+        }
+    }
+
+    /**
+     * Address-filtered advertisement probe: emits the RSSI of each
+     * advertisement heard from [address]. Used while a connect attempt is in
+     * flight to distinguish "strap not advertising" from "connect rejected"
+     * (spec: specs/advertising_probe.md). Fails the flow (rather than going
+     * silent) when scanning is unavailable, so callers never mistake a dead
+     * probe for a silent strap.
+     */
+    @SuppressLint("MissingPermission")
+    fun advertisements(address: String): Flow<Int> = callbackFlow {
+        val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        val scanner = bluetoothManager.adapter?.bluetoothLeScanner
+
+        if (scanner == null) {
+            close(IllegalStateException("Bluetooth LE scanner not available"))
+            return@callbackFlow
+        }
+
+        val filter = ScanFilter.Builder()
+            .setDeviceAddress(address)
+            .build()
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .build()
+
+        val callback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                trySend(result.rssi)
+            }
+
+            override fun onScanFailed(errorCode: Int) {
+                close(IllegalStateException("probe scan failed with error code: $errorCode"))
+            }
+        }
+
+        try {
+            scanner.startScan(listOf(filter), settings, callback)
+        } catch (e: SecurityException) {
+            close(e)
+            return@callbackFlow
+        }
+
+        awaitClose {
+            try {
+                scanner.stopScan(callback)
+            } catch (_: SecurityException) {
+                // Permission revoked mid-scan — nothing left to stop
+            }
         }
     }
 }

@@ -13,6 +13,7 @@ import dev.jtiisto.pulsebridge.core.ble.device.KnownDeviceStore
 import dev.jtiisto.pulsebridge.core.ble.di.bleCaptureStateQualifier
 import dev.jtiisto.pulsebridge.core.ble.model.ConnectionState
 import dev.jtiisto.pulsebridge.core.ble.model.SensorPriority
+import dev.jtiisto.pulsebridge.core.ble.scanner.BleScanner
 import dev.jtiisto.pulsebridge.core.common.DiagnosticLog
 import dev.jtiisto.pulsebridge.core.database.dao.DeviceSessionDao
 import dev.jtiisto.pulsebridge.core.database.dao.IntervalDao
@@ -62,6 +63,7 @@ class BleCaptureService : Service() {
     private val intervalDao: IntervalDao by inject()
     private val knownDeviceStore: KnownDeviceStore by inject()
     private val diagnosticLog: DiagnosticLog by inject()
+    private val bleScanner: BleScanner by inject()
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var connection: GarminHrmConnection? = null
@@ -169,6 +171,7 @@ class BleCaptureService : Service() {
             address = address,
             scope = serviceScope,
             diagnosticLog = diagnosticLog,
+            advertisementProbe = bleScanner::advertisements,
         )
         connection = conn
 

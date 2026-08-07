@@ -19,9 +19,13 @@ import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -56,14 +60,18 @@ class GarminHrmConnectionTest {
         return context
     }
 
-    private fun TestScope.connection(context: Context, maxAttempts: Int) =
-        GarminHrmConnection(
-            context = context,
-            address = ADDRESS,
-            scope = this,
-            diagnosticLog = DiagnosticLog(),
-            reconnectionStrategy = ReconnectionStrategy(ReconnectionConfig(maxAttempts = maxAttempts)),
-        )
+    private fun TestScope.connection(
+        context: Context,
+        maxAttempts: Int,
+        advertisementProbe: ((String) -> Flow<Int>)? = null,
+    ) = GarminHrmConnection(
+        context = context,
+        address = ADDRESS,
+        scope = this,
+        diagnosticLog = DiagnosticLog(),
+        reconnectionStrategy = ReconnectionStrategy(ReconnectionConfig(maxAttempts = maxAttempts)),
+        advertisementProbe = advertisementProbe,
+    )
 
     @Test
     fun `null connectGatt result never leaves state stuck in CONNECTING`() = runTest {
@@ -233,6 +241,155 @@ class GarminHrmConnectionTest {
 
         assertEquals(ConnectionState.DISCONNECTED, conn.connectionState.value)
         assertTrue(conn.connectionDetail.value!!.contains("Unable to connect after 1"))
+    }
+
+    // --- Advertising probe (spec: specs/advertising_probe.md) ---
+
+    @Test
+    fun `silent probe labels the watchdog abort as strap not advertising`() = runTest {
+        val conn = connection(
+            mockContext(gattMock),
+            maxAttempts = 0,
+            advertisementProbe = { MutableSharedFlow<Int>() }, // listens, hears nothing
+        )
+
+        conn.connect()
+        advanceTimeBy(GarminHrmConnection.DEFAULT_CONNECT_TIMEOUT_MS + 1)
+
+        assertTrue(conn.connectionDetail.value!!.contains("strap not advertising"))
+
+        conn.disconnect()
+    }
+
+    @Test
+    fun `heard advertisement labels the watchdog abort as connect failure`() = runTest {
+        val conn = connection(
+            mockContext(gattMock),
+            maxAttempts = 0,
+            advertisementProbe = { flowOf(-58) },
+        )
+
+        conn.connect()
+        advanceTimeBy(GarminHrmConnection.DEFAULT_CONNECT_TIMEOUT_MS + 1)
+
+        val detail = conn.connectionDetail.value!!
+        assertTrue(detail.contains("strap is advertising"))
+        assertTrue(detail.contains("rssi=-58"))
+
+        conn.disconnect()
+    }
+
+    @Test
+    fun `failed probe never claims the strap is silent`() = runTest {
+        val conn = connection(
+            mockContext(gattMock),
+            maxAttempts = 0,
+            advertisementProbe = {
+                kotlinx.coroutines.flow.flow { throw IllegalStateException("scan failed") }
+            },
+        )
+
+        conn.connect()
+        advanceTimeBy(GarminHrmConnection.DEFAULT_CONNECT_TIMEOUT_MS + 1)
+
+        val detail = conn.connectionDetail.value!!
+        assertTrue(detail.contains("Unable to connect"))
+        assertTrue(!detail.contains("strap not advertising"))
+        assertTrue(!detail.contains("strap is advertising"))
+
+        conn.disconnect()
+    }
+
+    @Test
+    fun `probe stops after the first advertisement`() = runTest {
+        var collected = 0
+        val conn = connection(
+            mockContext(gattMock),
+            maxAttempts = 0,
+            advertisementProbe = {
+                kotlinx.coroutines.flow.flow {
+                    while (true) {
+                        collected++
+                        emit(-60)
+                        kotlinx.coroutines.delay(100)
+                    }
+                }
+            },
+        )
+
+        conn.connect()
+        advanceTimeBy(GarminHrmConnection.DEFAULT_CONNECT_TIMEOUT_MS + 1)
+
+        // first() must cancel the scan after one emission — a probe that keeps
+        // the radio scanning for the whole window defeats its own purpose
+        assertEquals(1, collected)
+
+        conn.disconnect()
+    }
+
+    @Test
+    fun `successful connection cancels the probe`() = runTest {
+        var cancelled = false
+        every { gattMock.discoverServices() } returns true
+        val conn = connection(
+            mockContext(gattMock),
+            maxAttempts = 1,
+            advertisementProbe = {
+                kotlinx.coroutines.flow.flow<Int> {
+                    try {
+                        kotlinx.coroutines.awaitCancellation()
+                    } finally {
+                        cancelled = true
+                    }
+                }
+            },
+        )
+
+        conn.connect()
+        runCurrent() // let the probe coroutine actually start collecting
+        callbackSlot.captured.onConnectionStateChange(
+            gattMock, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED,
+        )
+        advanceUntilIdle()
+
+        assertTrue(cancelled)
+
+        conn.disconnect()
+    }
+
+    @Test
+    fun `probe verdict does not leak into a non-watchdog failure on the next attempt`() = runTest {
+        // Attempt 1: watchdog abort with a silent probe. Attempt 2 (the last):
+        // the strap answers and then drops with a real GATT callback — that
+        // failure was not observed by a probe and the final give-up message
+        // must not carry the stale verdict.
+        val conn = connection(
+            mockContext(gattMock),
+            maxAttempts = 1,
+            advertisementProbe = { MutableSharedFlow<Int>() },
+        )
+
+        conn.connect()
+        advanceTimeBy(GarminHrmConnection.DEFAULT_CONNECT_TIMEOUT_MS + 1)
+        assertTrue(conn.connectionDetail.value!!.contains("strap not advertising"))
+
+        // Let the 1 s retry issue connect() again — but stop the clock before
+        // its watchdog can fire, so the failure comes from the callback alone
+        advanceTimeBy(1_100)
+        runCurrent()
+        callbackSlot.captured.onConnectionStateChange(
+            gattMock, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED,
+        )
+        callbackSlot.captured.onConnectionStateChange(
+            gattMock, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_DISCONNECTED,
+        )
+        advanceUntilIdle()
+
+        val detail = conn.connectionDetail.value!!
+        assertTrue(detail.contains("Unable to connect"))
+        assertTrue(!detail.contains("strap not advertising"))
+
+        conn.disconnect()
     }
 
     @Test
